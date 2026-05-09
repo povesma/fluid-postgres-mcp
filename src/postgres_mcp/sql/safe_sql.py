@@ -15,7 +15,7 @@ class SafeSqlDriver(SqlDriver):
     """SQL parameterization utilities.
 
     Originally provided SQL validation via pglast; that path was removed
-    in the pgmcp-fluid fork (access control is the DB role's job). The
+    in the fluid-postgres-mcp fork (access control is the DB role's job). The
     static helper methods remain because 15+ DBA-tool call sites depend
     on them for safe parameter interpolation via psycopg.sql.
     """

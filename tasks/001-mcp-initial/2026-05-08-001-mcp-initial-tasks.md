@@ -28,6 +28,25 @@
 - `tests/integration/test_reconnect.py` :: Reconnection tests
   (create)
 - `tests/integration/test_timeout.py` :: Timeout tests (create)
+- `tests/integration/test_pre_connect.py` :: Pre-connect hook tests
+  (create)
+- `tests/integration/test_status.py` :: Status tool e2e tests (create)
+- `tests/k8s_fixtures.py` :: Helm-based PostgreSQL lifecycle for k8s
+  integration tests (create)
+- `tests/e2e/mcp_client_fixtures.py` :: MCP stdio client fixture
+  for E2E tests (create)
+- `tests/e2e/test_cli_wiring.py` :: CLI arg → config → runtime
+  wiring tests (create)
+- `tests/e2e/test_mcp_execute_sql.py` :: execute_sql tool via MCP
+  protocol in all output modes (create)
+- `tests/e2e/test_mcp_status.py` :: status tool via MCP protocol
+  with event history (create)
+- `tests/e2e/test_server_lifecycle.py` :: Server boot/shutdown
+  lifecycle tests (create)
+- `tests/e2e/ssm_fixtures.py` :: SSM tunnel + EC2 disruption
+  helpers (create)
+- `tests/e2e/test_ssm_disruption.py` :: Production-realistic
+  disruption tests via SSM (create)
 
 ## Notes
 
@@ -63,8 +82,8 @@
     Copy `tests/` directory. Copy `pyproject.toml`.
     [verify: code-only]
   - [X] 1.2 Rename package in `pyproject.toml`: name to
-    `pgmcp-fluid`, version to `0.1.0`, requires-python to
-    `>=3.10`, entry point to `pgmcp-fluid`. Update author
+    `fluid-postgres-mcp`, version to `0.1.0`, requires-python to
+    `>=3.10`, entry point to `fluid-postgres-mcp`. Update author
     and project URLs. [verify: code-only]
   - [X] 1.3 Remove `AccessMode` enum, `current_access_mode`
     global, `get_sql_driver()` function, and `--access-mode`
@@ -306,34 +325,153 @@
   - [X] 8.4 Write test: progress notification not emitted
     for inline mode (small results). [verify: auto-test]
 
-- [~] 9.0 **User Story:** As a developer, I want integration
+- [X] 9.0 **User Story:** As a developer, I want integration
   tests against a real PostgreSQL instance so that all
-  features are verified end-to-end [6/0]
-    → Requires running PostgreSQL via Docker; scaffolding
-      created, tests pending live execution
-  - [ ] 9.1 Create `docker-compose.yml` with postgres:17-
-    alpine service for integration tests. Add pytest
-    fixture that connects to dockerized PG, creates test
-    tables with `generate_series()` for large datasets.
-    (`tests/conftest.py`) [verify: code-only]
-  - [ ] 9.2 Integration test: file export of 500K rows —
+  features are verified end-to-end [6/6]
+    → PostgreSQL deployed to k8s cluster (`pgmcp-test`
+      namespace) via Bitnami Helm chart; ephemeral
+      (install/uninstall per test run). 24 integration
+      tests passing [live] (2026-05-09). Found and fixed
+      2 bugs: memoryview handling in COPY, credential
+      leak in status tool events.
+      NOTE: these tests exercise the library layer
+      (DbConnPool/SqlDriver) against real PG, not the
+      MCP server process. Server-level E2E in story 10.0.
+  - [X] 9.1 Create `tests/k8s_fixtures.py` with Helm-based
+    PostgreSQL lifecycle: `helm install` bitnami/postgresql
+    into `pgmcp-test` namespace, `kubectl port-forward` for
+    local access, pytest fixture that connects to k8s PG,
+    creates test tables with `generate_series()` for large
+    datasets. Teardown: `helm uninstall` + delete namespace.
+    (`tests/k8s_fixtures.py`, `tests/conftest.py`)
+    [verify: code-only]
+  - [X] 9.2 Integration test: file export of 500K rows —
     CSV file valid, row count correct, memory bounded.
     (`tests/integration/test_file_output.py`)
-    [verify: docker]
-  - [ ] 9.3 Integration test: `pg_terminate_backend()` drops
+    [verify: auto-test]
+    → pytest: 4 passed in 81s [live] (2026-05-09). Fixed
+      memoryview bug in _copy_to_file (psycopg3 yields
+      memoryview, not bytes)
+  - [X] 9.3 Integration test: `pg_terminate_backend()` drops
     connection, next query triggers reconnect, subsequent
     query succeeds. (`tests/integration/test_reconnect.py`)
-    [verify: docker]
-  - [ ] 9.4 Integration test: `pg_sleep(10)` with
+    [verify: auto-test]
+    → pytest: 4 passed in 88s [live] (2026-05-09). Verified
+      reconnect after pool invalidation, count increments,
+      data integrity, and pool resilience to single backend kill
+  - [X] 9.4 Integration test: `pg_sleep(10)` with
     `timeout_ms=1000` returns timeout error in ~1s,
     next query succeeds on same connection.
-    (`tests/integration/test_timeout.py`) [verify: docker]
-  - [ ] 9.5 Integration test: pre-connect hook script
+    (`tests/integration/test_timeout.py`) [verify: auto-test]
+    → pytest: 5 passed in 64s [live] (2026-05-09). Verified
+      timeout cancellation, connection reuse after timeout,
+      no-timeout and zero-timeout paths
+  - [X] 9.5 Integration test: pre-connect hook script
     executes before connection. Use a script that writes
     a marker file; verify file exists after connect.
     (`tests/integration/test_pre_connect.py`)
-    [verify: docker]
-  - [ ] 9.6 Integration test: status tool returns accurate
+    [verify: auto-test]
+    → pytest: 4 passed in 51s [live] (2026-05-09). Verified
+      marker file creation, counter increment on reconnect,
+      failed hook blocks connect, no-hook noop
+  - [X] 9.6 Integration test: status tool returns accurate
     state and history after a sequence of queries, a
     forced connection drop, and reconnection.
-    (`tests/integration/test_status.py`) [verify: docker]
+    (`tests/integration/test_status.py`) [verify: auto-test]
+    → pytest: 7 passed in 64s [live] (2026-05-09). Fixed
+      credential leak in status tool event output — added
+      obfuscate_password() to all event messages. Verified
+      full sequence: connect, query, terminate, reconnect,
+      status reflects all history
+
+- [X] 10.0 **User Story:** As a developer, I want E2E tests
+  that boot the actual MCP server process and exercise it
+  through the MCP protocol so that CLI args, config wiring,
+  tool routing, and server lifecycle are verified [5/5]
+    → 22 E2E tests passing via MCP stdio protocol [live]
+      (2026-05-09). Found and fixed: execute_sql returning
+      isError=False on errors, added __main__.py for
+      python -m invocation, increased helm timeout to 300s
+    → Uses k8s PG for the database backend. Server started
+      as a subprocess, MCP Python SDK client connects via
+      stdio transport.
+  - [X] 10.1 Create `tests/e2e/mcp_client_fixtures.py` with
+    a fixture that starts `fluid-postgres-mcp` as a subprocess
+    via stdio transport, connects an MCP SDK client
+    (`mcp.ClientSession`), lists tools, and tears down on
+    completion. Requires k8s PG from `k8s_fixtures`.
+    (`tests/e2e/mcp_client_fixtures.py`) [verify: code-only]
+  - [X] 10.2 E2E test: CLI arg wiring — server started with
+    `--pre-connect-script` (marker-file script), verify marker
+    exists after server connects. Start with `--default-timeout
+    1000`, run `SELECT pg_sleep(5)` via MCP, verify timeout
+    error. Start with `--output-dir /tmp/test-out`, run file
+    export, verify file created in that dir. Start with
+    `--event-buffer-size 5`, generate >5 events, verify status
+    tool only returns 5.
+    (`tests/e2e/test_cli_wiring.py`) [verify: auto-test]
+  - [X] 10.3 E2E test: call `execute_sql` tool through MCP
+    client in all three output modes (inline, file,
+    file+inline). Verify inline returns rows, file mode
+    creates CSV with correct metadata response, file+inline
+    returns both. Test with real data (generate_series).
+    (`tests/e2e/test_mcp_execute_sql.py`) [verify: auto-test]
+  - [X] 10.4 E2E test: call `status` tool through MCP client.
+    Verify connected state, events after queries, metadata
+    with reconnect count. Force connection drop via
+    `pg_terminate_backend`, verify error/reconnect events
+    appear in subsequent `status` call.
+    (`tests/e2e/test_mcp_status.py`) [verify: auto-test]
+  - [X] 10.5 E2E test: server lifecycle — start with invalid
+    connection string (unreachable host), verify server stays
+    alive and returns clear error on `execute_sql` call.
+    Verify graceful shutdown: send SIGTERM, confirm process
+    exits with code 0 within 5s.
+    (`tests/e2e/test_server_lifecycle.py`) [verify: auto-test]
+
+- [X] 11.0 **User Story:** As a developer, I want production-
+  realistic disruption tests against the EC2/SSM infrastructure
+  so that reconnection, pre-connect hooks, and status reporting
+  are verified under real failure conditions [6/6]
+    → 6 passed in 102s [live] (2026-05-09). All disruption
+      scenarios verified: SSM tunnel, pg_terminate_backend,
+      Docker container stop/start, Docker container restart.
+      PG on EC2 runs in Docker — tests use docker compose
+      commands via ssm:SendCommand.
+    → Uses EC2 instance <EC2_INSTANCE_ID> (<EC2_REGION>),
+      SSM tunneling, and SSM send-command for disruption.
+      Server runs as MCP subprocess with a pre-connect script
+      that establishes the SSM tunnel. Tests are destructive
+      to the test PG instance but safe (dev environment).
+  - [X] 11.1 Create `tests/e2e/ssm_fixtures.py` with helpers:
+    AWS role assumption, SSM tunnel setup/teardown, SSM
+    send-command wrapper for remote PG control, EC2 state
+    management. Create a pre-connect script that opens an
+    SSM tunnel to EC2:5432.
+    (`tests/e2e/ssm_fixtures.py`) [verify: code-only]
+  - [X] 11.2 E2E test: happy path — server boots with SSM
+    tunnel pre-connect script, connects to EC2 PG, runs
+    queries via MCP, `status` shows connected. Baseline
+    for disruption tests.
+    (`tests/e2e/test_ssm_disruption.py`) [verify: auto-test]
+  - [X] 11.3 E2E test: tunnel kill — kill the SSM tunnel
+    process mid-session. Next query fails. Pre-connect script
+    re-establishes tunnel. Server reconnects. Subsequent
+    queries succeed. `status` shows reconnect event.
+    (`tests/e2e/test_ssm_disruption.py`) [verify: auto-test]
+  - [X] 11.4 E2E test: connection kill via pg_terminate_backend
+    through SSM tunnel. Kill all mcp_reader backends via SQL,
+    verify error on next query, server reconnects, status
+    shows connected state.
+    (`tests/e2e/test_ssm_disruption.py`) [verify: auto-test]
+  - [X] 11.5 E2E test: PG service stop/start — SSM
+    send-command `docker compose stop/start postgres` on EC2.
+    (`tests/e2e/test_ssm_disruption.py`) [verify: auto-test]
+    → pytest: 1 passed in 77s [live] (2026-05-09). Container
+      stopped, queries failed, container started, server
+      reconnected, queries resumed
+  - [X] 11.6 E2E test: PG service restart — SSM send-command
+    `docker compose restart postgres`.
+    (`tests/e2e/test_ssm_disruption.py`) [verify: auto-test]
+    → pytest: 1 passed [live] (2026-05-09). Container
+      restarted, server detected failure and reconnected

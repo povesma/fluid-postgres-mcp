@@ -405,7 +405,8 @@ class SqlDriver:
 
             with open(file_path, "wb") as f:
                 async with cursor.copy(copy_sql) as copy:
-                    async for data in copy:
+                    async for raw in copy:
+                        data = bytes(raw) if isinstance(raw, memoryview) else raw
                         if not header_parsed:
                             first_line_end = data.find(b"\n")
                             if first_line_end >= 0:

@@ -32,7 +32,7 @@ from .sql import check_hypopg_installation_status
 from .sql import obfuscate_password
 from .top_queries import TopQueriesCalc
 
-mcp = FastMCP("pgmcp-fluid")
+mcp = FastMCP("fluid-postgres-mcp")
 
 PG_STAT_STATEMENTS = "pg_stat_statements"
 HYPOPG_EXTENSION = "hypopg"
@@ -79,15 +79,15 @@ async def status(
 
     if errors > 0:
         err_events = event_store.get_events(EventCategory.ERROR, errors)
-        result["errors"] = [{"timestamp": e.timestamp.isoformat(), "message": e.message} for e in err_events]
+        result["errors"] = [{"timestamp": e.timestamp.isoformat(), "message": obfuscate_password(e.message)} for e in err_events]
 
     if warnings > 0:
         warn_events = event_store.get_events(EventCategory.WARNING, warnings)
-        result["warnings"] = [{"timestamp": e.timestamp.isoformat(), "message": e.message} for e in warn_events]
+        result["warnings"] = [{"timestamp": e.timestamp.isoformat(), "message": obfuscate_password(e.message)} for e in warn_events]
 
     if events > 0:
         reg_events = event_store.get_events(EventCategory.EVENT, events)
-        result["events"] = [{"timestamp": e.timestamp.isoformat(), "message": e.message} for e in reg_events]
+        result["events"] = [{"timestamp": e.timestamp.isoformat(), "message": obfuscate_password(e.message)} for e in reg_events]
 
     if metadata:
         result["metadata"] = {
@@ -491,8 +491,8 @@ async def execute_sql(
             return format_text_response("No results")
         return format_text_response(list([r.cells for r in rows]))
     except Exception as e:
-        logger.error(f"Error executing query: {e}")
-        return format_error_response(str(e))
+        logger.error(f"Error executing query: {obfuscate_password(str(e))}")
+        raise
 
 
 @mcp.tool(
@@ -623,7 +623,7 @@ async def get_top_queries(
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="pgmcp-fluid — Fluid PostgreSQL MCP Server")
+    parser = argparse.ArgumentParser(description="fluid-postgres-mcp — Fluid PostgreSQL MCP Server")
     parser.add_argument("database_url", help="Database connection URL", nargs="?")
     parser.add_argument(
         "--transport",
@@ -676,7 +676,7 @@ async def main():
         on_event=lambda msg: event_store.record(EventCategory.EVENT, msg),
     )
 
-    logger.info("Starting pgmcp-fluid PostgreSQL MCP Server")
+    logger.info("Starting fluid-postgres-mcp PostgreSQL MCP Server")
 
     # Get database URL from environment variable or command line
     database_url = os.environ.get("DATABASE_URI", args.database_url)

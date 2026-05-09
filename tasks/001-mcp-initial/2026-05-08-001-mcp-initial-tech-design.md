@@ -18,7 +18,7 @@ path. Retain `SafeSqlDriver` as a utility class (its static
 every DBA tool). Retain `pglast` (used directly by index tuning and
 bind-param analysis).
 
-Publish as `pgmcp-fluid` on PyPI.
+Publish as `fluid-postgres-mcp` on PyPI.
 
 ## Current Architecture (RLM-verified)
 
@@ -493,14 +493,14 @@ enabling cherry-picks. Document that the name is a misnomer.
 | Requirement | Method | Scope | Expected Evidence |
 |-------------|--------|-------|-------------------|
 | FR-1: Query Output Modes | `auto-test` | integration | pytest: 3 modes produce correct output (inline, file with metadata, file+inline with both) |
-| FR-1: 500K-row file export | `docker` | integration | pytest against dockerized PG: CSV file valid, memory <50 MB |
+| FR-1: 500K-row file export | `auto-test` | integration | pytest against k8s PG (pgmcp-test namespace): CSV file valid, memory <50 MB |
 | FR-2: Per-query timeout | `auto-test` | integration | pytest: `pg_sleep(10)` with timeout_ms=1000 raises error in ~1s, next query succeeds |
-| FR-3: Auto reconnection | `docker` | integration | pytest: `pg_terminate_backend()`, next query triggers reconnect and succeeds |
+| FR-3: Auto reconnection | `auto-test` | integration | pytest against k8s PG: `pg_terminate_backend()`, next query triggers reconnect and succeeds |
 | FR-4: Pre-connect hook | `auto-test` | unit + integration | pytest: mock script called before connect, failure triggers backoff |
 | FR-5: Status tool | `auto-test` | unit | pytest: status returns correct state after connect/query/error/reconnect |
 | FR-6: Progress notifications | `manual-run-claude` | integration | MCP client receives ≥2 progress notifications during large export |
 | FR-7: DBA tools retained | `auto-test` | unit | pytest: upstream DBA tool tests pass without modification |
-| NFR-3: Never crash on conn failure | `docker` | integration | Server process stays alive after connection drop, returns error, reconnects |
+| NFR-3: Never crash on conn failure | `auto-test` | integration | Server process stays alive after connection drop, returns error, reconnects |
 | NFR-5: No credentials in output | `auto-test` | unit | pytest: status/error responses contain no connection string fragments |
 
 ## Files to Create
@@ -520,7 +520,7 @@ enabling cherry-picks. Document that the name is a misnomer.
   Add progress notifications. Update CLI args.
 - `src/postgres_mcp/__init__.py` — Remove `top_queries` import if not
   needed at package level
-- `pyproject.toml` — Rename to `pgmcp-fluid`, update version,
+- `pyproject.toml` — Rename to `fluid-postgres-mcp`, update version,
   requires-python to `>=3.10`, update entry point, add project URLs
 
 ## Dependencies

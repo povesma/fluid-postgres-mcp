@@ -1,4 +1,4 @@
-# pgmcp-fluid
+# fluid-postgres-mcp
 
 Fluid PostgreSQL MCP Server — reliable database interface for AI agents.
 
