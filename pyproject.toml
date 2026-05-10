@@ -13,7 +13,7 @@ dependencies = [
     "psycopg-pool>=3.3.0",
     "instructor>=1.14.4",
 ]
-license = "mit"
+license = "MIT"
 license-files = ["LICENSE"]
 
 [[project.authors]]
