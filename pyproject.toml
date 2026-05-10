@@ -18,7 +18,7 @@ license-files = ["LICENSE"]
 
 [[project.authors]]
 name = "D Povesma"
-email = "povesma@<analyst-profile>.com"
+email = "povesma@users.noreply.github.com"
 
 [project.urls]
 Homepage = "https://github.com/povesma/fluid-postgres-mcp"

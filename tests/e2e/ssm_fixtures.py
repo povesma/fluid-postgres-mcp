@@ -1,7 +1,20 @@
 """SSM tunnel + EC2 disruption helpers for E2E tests.
 
-Uses the same AWS auth flow as mcp-crm.sh: load .env.system,
-export credentials from AWS_ANALYST_PROFILE, assume ANALYST_ROLE_ARN.
+AWS auth flow: load the env file at $SSM_ENV_FILE (defaults to
+~/.config/fluid-postgres-mcp/ssm.env), export credentials from
+AWS_ANALYST_PROFILE, assume ANALYST_ROLE_ARN.
+
+Required env-file keys:
+  EC2_INSTANCE_ID, EC2_REGION, ANALYST_ROLE_ARN, AWS_ANALYST_PROFILE
+
+Optional environment variables:
+  SSM_ENV_FILE       — path to the env file above
+  SSM_PASSWORD_PARAM — SSM Parameter Store name for the DB password
+                       (default: /fluid-postgres-mcp/db-reader-password)
+  SSM_DB_NAME        — database name in the emitted URL (default: postgres)
+  SSM_DB_USER        — DB user in the emitted URL (default: mcp_reader)
+  SSM_REMOTE_PROJECT_DIR — remote dir for docker-compose-based PG
+                           service tests (default: /opt/postgres-mcp-pg)
 """
 
 from __future__ import annotations
@@ -21,7 +34,15 @@ import pytest
 
 logger = logging.getLogger(__name__)
 
-ENV_SYSTEM_PATH = os.path.expanduser("${SSM_ENV_FILE}")
+ENV_SYSTEM_PATH = os.environ.get(
+    "SSM_ENV_FILE",
+    os.path.expanduser("~/.config/fluid-postgres-mcp/ssm.env"),
+)
+SSM_PASSWORD_PARAM = os.environ.get(
+    "SSM_PASSWORD_PARAM", "/fluid-postgres-mcp/db-reader-password"
+)
+SSM_DB_NAME = os.environ.get("SSM_DB_NAME", "postgres")
+SSM_DB_USER = os.environ.get("SSM_DB_USER", "mcp_reader")
 
 
 @dataclass
@@ -34,7 +55,7 @@ class SsmConfig:
 
 def load_ssm_config() -> SsmConfig:
     if not os.path.exists(ENV_SYSTEM_PATH):
-        pytest.skip(f".env.system not found at {ENV_SYSTEM_PATH}")
+        pytest.skip(f"SSM env file not found at {ENV_SYSTEM_PATH}")
 
     env = {}
     with open(ENV_SYSTEM_PATH) as f:
@@ -207,7 +228,7 @@ def ssm_send_command(config: SsmConfig, aws_env: dict[str, str], command: str, t
 def get_db_password(config: SsmConfig, aws_env: dict[str, str]) -> str:
     result = _run([
         "aws", "ssm", "get-parameter",
-        "--name", "${SSM_PASSWORD_PARAM}",
+        "--name", SSM_PASSWORD_PARAM,
         "--with-decryption",
         "--region", config.ec2_region,
         "--query", "Parameter.Value",
@@ -271,9 +292,9 @@ if ! nc -z 127.0.0.1 {local_port} 2>/dev/null; then
 fi
 
 # Resolve the DB password (Parameter Store or test override).
-{pw_override_block if pw_override_block else 'PW=$(aws ssm get-parameter --name ${SSM_PASSWORD_PARAM} --with-decryption --query Parameter.Value --output text)'}
+{pw_override_block if pw_override_block else f'PW=$(aws ssm get-parameter --name {SSM_PASSWORD_PARAM} --with-decryption --query Parameter.Value --output text)'}
 
-URL="postgresql://mcp_reader:${{PW}}@127.0.0.1:{local_port}/crm?connect_timeout=10&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=3"
+URL="postgresql://{SSM_DB_USER}:${{PW}}@127.0.0.1:{local_port}/{SSM_DB_NAME}?connect_timeout=10&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=3"
 
 printf '[MCP] DB_URL %s\\n' "$URL"
 printf '[MCP] READY_TO_CONNECT\\n'

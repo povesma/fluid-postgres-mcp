@@ -14,6 +14,10 @@ import time
 
 import pytest
 
+REMOTE_PROJECT_DIR = os.environ.get(
+    "SSM_REMOTE_PROJECT_DIR", "/opt/postgres-mcp-pg"
+)
+
 from mcp_client_fixtures import McpSession
 from mcp_client_fixtures import call_tool
 from mcp_client_fixtures import create_mcp_session
@@ -219,7 +223,7 @@ class TestPgServiceStopStart:
             assert not result.isError
 
             ssm_send_command(ssm_config, aws_env,
-                "cd ${REMOTE_PROJECT_DIR} && docker compose stop postgres"
+                f"cd {REMOTE_PROJECT_DIR} && docker compose stop postgres"
             )
             await asyncio.sleep(5)
 
@@ -234,7 +238,7 @@ class TestPgServiceStopStart:
             assert got_error, "Expected error after PG container stop"
 
             ssm_send_command(ssm_config, aws_env,
-                "cd ${REMOTE_PROJECT_DIR} && docker compose start postgres"
+                f"cd {REMOTE_PROJECT_DIR} && docker compose start postgres"
             )
             await asyncio.sleep(15)
 
@@ -268,7 +272,7 @@ class TestPgServiceRestart:
             assert not result.isError
 
             ssm_send_command(ssm_config, aws_env,
-                "cd ${REMOTE_PROJECT_DIR} && docker compose restart postgres"
+                f"cd {REMOTE_PROJECT_DIR} && docker compose restart postgres"
             )
             await asyncio.sleep(10)
 

@@ -39,8 +39,9 @@
 - Unit tests can mock `asyncio.create_subprocess_exec` via a small
   fake-process helper. Integration and E2E tests use real
   subprocesses.
-- SSM E2E tests require `${SSM_ENV_FILE}` and an
-  `aws login --profile <analyst-profile>` session, same as task 001 user
+- SSM E2E tests require an env file at `$SSM_ENV_FILE` (default
+  `~/.config/fluid-postgres-mcp/ssm.env`) and a valid AWS session
+  for the configured analyst profile, same as task 001 user
   story 11.0.
 - Backwards compatibility is the primary regression risk. After
   every parent story, re-run the full test suite (unit +
