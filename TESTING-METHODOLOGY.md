@@ -124,10 +124,10 @@ Mode is **inferred**, never declared:
 ```mermaid
 flowchart TD
     spawn[spawn script] --> race{first event?}
-    race -->|exits with code 0| RAE_OK[run-and-exit ✓]
-    race -->|exits with non-zero| RAE_FAIL[run-and-exit ✗]
-    race -->|<code>[MCP] READY_TO_CONNECT</code>| LR[long-running ✓ — keep alive]
-    race -->|hook_timeout| KILL[kill + ready timeout ✗]
+    race -->|"exits with code 0"| RAE_OK[run-and-exit ✓]
+    race -->|"exits with non-zero"| RAE_FAIL[run-and-exit ✗]
+    race -->|"&#91;MCP&#93; READY_TO_CONNECT"| LR[long-running ✓ — keep alive]
+    race -->|"hook_timeout"| KILL[kill + ready timeout ✗]
 ```
 
 Long-running re-readiness — the `asyncio.Event` is cleared after each
