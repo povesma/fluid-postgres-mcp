@@ -137,8 +137,10 @@ Working examples used by the test suite — copy and adapt:
 - **Diagnose without shelling onto the box.** All script lifecycle
   events are exposed via the `status` MCP tool — `started`/`pid`,
   `READY_TO_CONNECT`, `DB_URL` (host/db only, password redacted),
-  `exited`/`exit_code`. See [`TESTING-METHODOLOGY.md`](./TESTING-METHODOLOGY.md)
-  for the full event catalogue.
+  `exited`/`exit_code`. See [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+  for how the event store is wired and
+  [`TESTING-METHODOLOGY.md`](./TESTING-METHODOLOGY.md) for the faults
+  we inject against it.
 
 ## License
 
