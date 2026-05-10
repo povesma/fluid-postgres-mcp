@@ -219,6 +219,76 @@ def get_db_password(config: SsmConfig, aws_env: dict[str, str]) -> str:
     return result.stdout.strip()
 
 
+def create_long_running_tunnel_script(
+    config: SsmConfig,
+    aws_env: dict[str, str],
+    local_port: int,
+    password_override: str | None = None,
+) -> str:
+    """Long-running pre-connect script for the [MCP] DB_URL/READY_TO_CONNECT protocol.
+
+    Opens the SSM port-forward as a foreground child, waits for the local
+    port to accept connections, fetches the DB password from SSM Parameter
+    Store (or uses `password_override` if provided — useful for credential
+    rotation tests), emits `[MCP] DB_URL postgresql://...` and
+    `[MCP] READY_TO_CONNECT`, then `wait`s on the SSM child so that tunnel
+    death propagates as script exit.
+    """
+    pw_override_block = ""
+    if password_override is not None:
+        # The test wants a deterministic password — bypass Parameter Store.
+        pw_override_block = f'PW={password_override!r}\n'
+
+    script_content = f"""#!/usr/bin/env bash
+set -euo pipefail
+
+export AWS_ACCESS_KEY_ID="{aws_env['AWS_ACCESS_KEY_ID']}"
+export AWS_SECRET_ACCESS_KEY="{aws_env['AWS_SECRET_ACCESS_KEY']}"
+export AWS_SESSION_TOKEN="{aws_env['AWS_SESSION_TOKEN']}"
+export AWS_DEFAULT_REGION="{config.ec2_region}"
+
+# Open the SSM tunnel as a backgrounded child of this shell.
+aws ssm start-session \\
+    --target "{config.ec2_instance_id}" \\
+    --region "{config.ec2_region}" \\
+    --document-name AWS-StartPortForwardingSession \\
+    --parameters "portNumber=5432,localPortNumber={local_port}" \\
+    >/dev/null 2>&1 &
+TUNNEL_PID=$!
+
+# Wait for the port to accept connections.
+for _ in $(seq 1 30); do
+    if nc -z 127.0.0.1 {local_port} 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+
+if ! nc -z 127.0.0.1 {local_port} 2>/dev/null; then
+    kill "$TUNNEL_PID" 2>/dev/null || true
+    echo "tunnel never came up" >&2
+    exit 1
+fi
+
+# Resolve the DB password (Parameter Store or test override).
+{pw_override_block if pw_override_block else 'PW=$(aws ssm get-parameter --name ${SSM_PASSWORD_PARAM} --with-decryption --query Parameter.Value --output text)'}
+
+URL="postgresql://mcp_reader:${{PW}}@127.0.0.1:{local_port}/crm?connect_timeout=10&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=3"
+
+printf '[MCP] DB_URL %s\\n' "$URL"
+printf '[MCP] READY_TO_CONNECT\\n'
+
+# Block until the SSM child dies, then exit so the MCP detects the
+# tunnel loss within ~1s.
+wait "$TUNNEL_PID"
+"""
+    fd, path = tempfile.mkstemp(suffix=".sh", prefix="ssm-long-running-")
+    with os.fdopen(fd, "w") as f:
+        f.write(script_content)
+    os.chmod(path, stat.S_IRWXU)
+    return path
+
+
 def create_tunnel_script(config: SsmConfig, aws_env: dict[str, str], local_port: int) -> str:
     """Create a pre-connect script that opens an SSM tunnel."""
     script_content = f"""#!/bin/bash

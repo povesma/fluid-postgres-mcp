@@ -9,8 +9,10 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from contextlib import AsyncExitStack
 from typing import Any
 from typing import AsyncGenerator
+from typing import Optional
 
 from mcp import types
 from mcp.client.session import ClientSession
@@ -68,3 +70,49 @@ def extract_text(result: types.CallToolResult) -> str:
         if isinstance(content, types.TextContent):
             return content.text
     return ""
+
+
+class McpSession:
+    """Async-context-manager wrapper for an MCP stdio session.
+
+    Unlike `create_mcp_session` (async generator), this class enters
+    and exits all underlying contexts (`stdio_client`, `ClientSession`)
+    inside `__aenter__` / `__aexit__` of the same task. Avoids the
+    "Attempted to exit cancel scope in a different task" anyio error
+    that fires when an async-generator-driven session crosses a task
+    boundary during teardown — for example when the MCP server
+    respawns a subprocess while the test still holds the session.
+    """
+
+    def __init__(
+        self,
+        database_url: str,
+        extra_args: list[str] | None = None,
+        env_overrides: dict[str, str] | None = None,
+    ) -> None:
+        self._params = build_server_params(database_url, extra_args, env_overrides)
+        self._stack: Optional[AsyncExitStack] = None
+        self.session: Optional[ClientSession] = None
+
+    async def __aenter__(self) -> ClientSession:
+        logger.info("Starting MCP server: %s %s", self._params.command, " ".join(self._params.args))
+        stack = AsyncExitStack()
+        try:
+            read, write = await stack.enter_async_context(stdio_client(self._params))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            tools = await session.list_tools()
+            logger.info("MCP session ready, tools: %s", [t.name for t in tools.tools])
+        except BaseException:
+            await stack.aclose()
+            raise
+        self._stack = stack
+        self.session = session
+        return session
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        stack = self._stack
+        self._stack = None
+        self.session = None
+        if stack is not None:
+            await stack.aclose()

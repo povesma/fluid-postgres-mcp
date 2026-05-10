@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -12,14 +11,17 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
-from urllib.parse import urlparse
-from urllib.parse import urlunparse
 
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from typing_extensions import LiteralString
 
 from postgres_mcp.config import ReconnectConfig
+from postgres_mcp.sql.connection_script import ConnectionScriptManager
+from postgres_mcp.sql.connection_script import ScriptMode
+from postgres_mcp.sql.utils import obfuscate_password
+
+__all__ = ["ConnState", "DbConnPool", "SqlDriver", "obfuscate_password"]
 
 logger = logging.getLogger(__name__)
 
@@ -30,48 +32,6 @@ class ConnState(str, Enum):
     QUERYING = "querying"
     RECONNECTING = "reconnecting"
     ERROR = "error"
-
-
-def obfuscate_password(text: str | None) -> str | None:
-    """
-    Obfuscate password in any text containing connection information.
-    Works on connection URLs, error messages, and other strings.
-    """
-    if text is None:
-        return None
-
-    if not text:
-        return text
-
-    # Try first as a proper URL
-    try:
-        parsed = urlparse(text)
-        if parsed.scheme and parsed.netloc and parsed.password:
-            # Replace password with asterisks in proper URL
-            netloc = parsed.netloc.replace(parsed.password, "****")
-            return urlunparse(parsed._replace(netloc=netloc))
-    except Exception:
-        pass
-
-    # Handle strings that contain connection strings but aren't proper URLs
-    # Match postgres://user:password@host:port/dbname pattern
-    url_pattern = re.compile(r"(postgres(?:ql)?:\/\/[^:]+:)([^@]+)(@[^\/\s]+)")
-    text = re.sub(url_pattern, r"\1****\3", text)
-
-    # Match connection string parameters (password=xxx)
-    # This simpler pattern captures password without quotes
-    param_pattern = re.compile(r'(password=)([^\s&;"\']+)', re.IGNORECASE)
-    text = re.sub(param_pattern, r"\1****", text)
-
-    # Match password in DSN format with single quotes
-    dsn_single_quote = re.compile(r"(password\s*=\s*')([^']+)(')", re.IGNORECASE)
-    text = re.sub(dsn_single_quote, r"\1****\3", text)
-
-    # Match password in DSN format with double quotes
-    dsn_double_quote = re.compile(r'(password\s*=\s*")([^"]+)(")', re.IGNORECASE)
-    text = re.sub(dsn_double_quote, r"\1****\3", text)
-
-    return text
 
 
 class DbConnPool:
@@ -91,6 +51,12 @@ class DbConnPool:
         self._reconnect_count = 0
         self._reconnect_config = reconnect_config or ReconnectConfig()
         self._on_event = on_event
+        self._script_mgr = ConnectionScriptManager(
+            script=self._reconnect_config.pre_connect_script,
+            hook_timeout=self._reconnect_config.hook_timeout,
+            on_event=on_event,
+        )
+        self._exit_watcher_task: Optional[asyncio.Task] = None
 
     @property
     def state(self) -> ConnState:
@@ -112,38 +78,8 @@ class DbConnPool:
         if self._on_event:
             self._on_event(msg)
 
-    async def _run_pre_connect_hook(self) -> bool:
-        script = self._reconnect_config.pre_connect_script
-        if not script:
-            return True
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *script.split(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=self._reconnect_config.hook_timeout,
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                self._emit(f"Pre-connect hook timed out after {self._reconnect_config.hook_timeout}s")
-                return False
-            if proc.returncode != 0:
-                self._emit(f"Pre-connect hook failed with exit code {proc.returncode}")
-                logger.debug("Hook stderr: %s", stderr.decode(errors="replace") if stderr else "")
-                return False
-            logger.debug("Hook stdout: %s", stdout.decode(errors="replace") if stdout else "")
-            return True
-        except Exception as e:
-            self._emit(f"Pre-connect hook error: {obfuscate_password(str(e))}")
-            return False
-
     async def _create_pool(self, url: str) -> AsyncConnectionPool:
-        await self.close()
+        await self._close_pool_only()
         pool = AsyncConnectionPool(
             conninfo=url,
             min_size=1,
@@ -167,12 +103,16 @@ class DbConnPool:
             self._last_error = "Database connection URL not provided"
             raise ValueError(self._last_error)
 
-        hook_ok = await self._run_pre_connect_hook()
-        if not hook_ok:
+        outcome = await self._script_mgr.ensure_ready()
+        if not outcome.success:
             self._state = ConnState.ERROR
             self._is_valid = False
-            self._last_error = "Pre-connect hook failed"
+            self._last_error = outcome.error or "Pre-connect script failed"
             raise ValueError(self._last_error)
+
+        if outcome.db_url_override:
+            url = outcome.db_url_override
+            self.connection_url = url
 
         try:
             self.pool = await self._create_pool(url)
@@ -180,6 +120,7 @@ class DbConnPool:
             self._last_error = None
             self._state = ConnState.CONNECTED
             self._emit("Connected to database")
+            self._spawn_exit_watcher()
             return self.pool
         except Exception as e:
             self._is_valid = False
@@ -211,9 +152,14 @@ class DbConnPool:
             logger.info("Reconnect attempt %d in %.1fs", attempt, delay)
             await asyncio.sleep(delay)
 
-            hook_ok = await self._run_pre_connect_hook()
-            if not hook_ok:
+            outcome = await self._script_mgr.ensure_ready()
+            if not outcome.success:
+                self._last_error = outcome.error
                 continue
+
+            if outcome.db_url_override:
+                url = outcome.db_url_override
+                self.connection_url = url
 
             try:
                 self.pool = await self._create_pool(url)
@@ -222,6 +168,7 @@ class DbConnPool:
                 self._state = ConnState.CONNECTED
                 self._reconnect_count += 1
                 self._emit(f"Reconnected (attempt {attempt})")
+                self._spawn_exit_watcher()
                 return self.pool
             except Exception as e:
                 self._last_error = obfuscate_password(str(e))
@@ -237,7 +184,27 @@ class DbConnPool:
         self._last_error = obfuscate_password(error)
         self._emit(f"Connection lost: {self._last_error}")
 
-    async def close(self) -> None:
+    def _spawn_exit_watcher(self) -> None:
+        """Spawn a task that invalidates the pool when a long-running script exits."""
+        if self._script_mgr.mode is not ScriptMode.LONG_RUNNING:
+            return
+        if self._exit_watcher_task is not None and not self._exit_watcher_task.done():
+            self._exit_watcher_task.cancel()
+        self._exit_watcher_task = asyncio.create_task(self._watch_script_exit())
+
+    async def _watch_script_exit(self) -> None:
+        try:
+            await self._script_mgr._exit_event.wait()
+        except asyncio.CancelledError:
+            raise
+        if self._is_valid:
+            self.mark_invalid("pre-connect-script exited")
+            self._emit("Pre-connect-script restart requested")
+
+    async def _close_pool_only(self) -> None:
+        """Close just the psycopg pool. Leaves the script manager and
+        watcher alive — used between reconnect attempts where the
+        long-running script must keep owning the tunnel."""
         if self.pool:
             try:
                 await self.pool.close()
@@ -246,6 +213,20 @@ class DbConnPool:
             finally:
                 self.pool = None
                 self._is_valid = False
+
+    async def close(self) -> None:
+        if self._exit_watcher_task is not None and not self._exit_watcher_task.done():
+            self._exit_watcher_task.cancel()
+            try:
+                await self._exit_watcher_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._exit_watcher_task = None
+        try:
+            await self._script_mgr.stop()
+        except Exception as e:
+            logger.warning("Error stopping pre-connect-script manager: %s", e)
+        await self._close_pool_only()
 
 
 class SqlDriver:

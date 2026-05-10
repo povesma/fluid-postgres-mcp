@@ -107,7 +107,7 @@ class TestPreConnectHookIntegration:
                 connection_url=connection_string,
                 reconnect_config=ReconnectConfig(pre_connect_script=script_path),
             )
-            with pytest.raises(ValueError, match="Pre-connect hook failed"):
+            with pytest.raises(ValueError, match=r"exited with code 1"):
                 await pool.pool_connect()
             assert pool.state == ConnState.ERROR
 

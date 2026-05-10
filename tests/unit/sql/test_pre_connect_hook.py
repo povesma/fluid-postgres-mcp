@@ -1,6 +1,14 @@
+"""Pre-connect hook integration tests via DbConnPool.
+
+Direct-call coverage of the now-removed `_run_pre_connect_hook` lives
+in `test_connection_script.py`. This file keeps the
+DbConnPool-level integration tests: hook-before-connect ordering,
+reconnect-loop short-circuit on hook failure, initial-connect
+failure-mode propagation.
+"""
+
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
@@ -24,68 +32,6 @@ def _make_pool(script: str | None = "/bin/true", hook_timeout: float = 5.0, **kw
     )
 
 
-def _patch_create_pool(pool):
-    mock_pool = AsyncMock()
-
-    async def fake_create_pool(url):
-        return mock_pool
-
-    pool._create_pool = fake_create_pool
-    return mock_pool
-
-
-class TestHookExecution:
-    @pytest.mark.asyncio
-    async def test_no_script_is_noop(self):
-        pool = _make_pool(script=None)
-        result = await pool._run_pre_connect_hook()
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_successful_script_returns_true(self):
-        pool = _make_pool(script="echo hello")
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"hello\n", b""))
-        mock_proc.returncode = 0
-
-        with patch("postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await pool._run_pre_connect_hook()
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_failed_script_returns_false(self):
-        pool = _make_pool(script="/bin/false")
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"error\n"))
-        mock_proc.returncode = 1
-
-        with patch("postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await pool._run_pre_connect_hook()
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_timeout_kills_script(self):
-        pool = _make_pool(script="sleep 100", hook_timeout=0.01)
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(side_effect=[asyncio.TimeoutError(), (b"", b"")])
-        mock_proc.kill = AsyncMock()
-
-        with patch("postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await pool._run_pre_connect_hook()
-        assert result is False
-        mock_proc.kill.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_exception_in_hook_returns_false(self):
-        pool = _make_pool(script="nonexistent_command_xyz")
-        with patch(
-            "postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec",
-            side_effect=FileNotFoundError("not found"),
-        ):
-            result = await pool._run_pre_connect_hook()
-        assert result is False
-
-
 class TestHookIntegration:
     @pytest.mark.asyncio
     async def test_hook_called_before_connect(self):
@@ -94,9 +40,13 @@ class TestHookIntegration:
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.wait = AsyncMock(return_value=0)
         mock_proc.returncode = 0
+        # async-iterable empty stdout — exits immediately, RUN_AND_EXIT.
+        mock_proc.stdout = _empty_async_iter()
+        mock_proc.stderr = _empty_async_iter()
 
-        async def track_hook(*args, **kwargs):
+        async def track_spawn(*args, **kwargs):
             call_order.append("hook")
             return mock_proc
 
@@ -106,7 +56,7 @@ class TestHookIntegration:
 
         pool._create_pool = track_create
 
-        with patch("postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec", side_effect=track_hook):
+        with patch("asyncio.create_subprocess_exec", side_effect=track_spawn):
             await pool.pool_connect()
 
         assert call_order == ["hook", "connect"]
@@ -126,13 +76,16 @@ class TestHookIntegration:
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.wait = AsyncMock(return_value=1)
         mock_proc.returncode = 1
+        mock_proc.stdout = _empty_async_iter()
+        mock_proc.stderr = _empty_async_iter()
 
         async def fast_sleep(d):
-            pass
+            return None
 
-        with patch("postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec", return_value=mock_proc):
-            with patch("postgres_mcp.sql.sql_driver.asyncio.sleep", side_effect=fast_sleep):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            with patch("asyncio.sleep", side_effect=fast_sleep):
                 with pytest.raises(ConnectionError):
                     await pool._reconnect_loop()
 
@@ -143,41 +96,25 @@ class TestHookIntegration:
         pool = _make_pool(script="/bin/false")
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.wait = AsyncMock(return_value=1)
         mock_proc.returncode = 1
+        mock_proc.stdout = _empty_async_iter()
+        mock_proc.stderr = _empty_async_iter()
 
-        with patch("postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec", return_value=mock_proc):
-            with pytest.raises(ValueError, match="Pre-connect hook failed"):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            with pytest.raises(ValueError, match="exited with code 1"):
                 await pool.pool_connect()
         assert pool.state == ConnState.ERROR
 
 
-class TestHookPathResolution:
-    @pytest.mark.asyncio
-    async def test_absolute_path(self):
-        pool = _make_pool(script="/usr/bin/env echo hello")
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-        mock_proc.returncode = 0
+def _empty_async_iter():
+    """Async-iterable that yields no lines and immediately raises StopAsyncIteration."""
 
-        with patch("postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await pool._run_pre_connect_hook()
-        mock_exec.assert_called_once_with(
-            "/usr/bin/env", "echo", "hello",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    class _Empty:
+        def __aiter__(self):
+            return self
 
-    @pytest.mark.asyncio
-    async def test_executable_name_only(self):
-        pool = _make_pool(script="my-tunnel-script")
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-        mock_proc.returncode = 0
+        async def __anext__(self):
+            raise StopAsyncIteration
 
-        with patch("postgres_mcp.sql.sql_driver.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await pool._run_pre_connect_hook()
-        mock_exec.assert_called_once_with(
-            "my-tunnel-script",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    return _Empty()
