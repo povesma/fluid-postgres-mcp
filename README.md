@@ -358,6 +358,14 @@ Notes:
   [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/);
   the entry is mandatory before the version bump (treat it as a
   release gate alongside the `tar -tzf` listing).
+- **Changelog audience & size.** Entries are for **users of the
+  package**, not contributors. Each bullet answers "what do I do
+  or expect differently?" — skip internal symbol names; those
+  belong in the commit message. Size guide by SemVer level:
+  *patch* (0.1.x → 0.1.y): 1–4 bullets, ≤ ~10 lines body;
+  *minor* (0.x → 0.y): 3–8 bullets grouped Added/Changed/Fixed,
+  ≤ ~25 lines; *major*: lead with a 1-paragraph migration note,
+  then as long as it needs.
 
 ## License
 
