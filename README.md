@@ -12,20 +12,161 @@ Fork of [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp).
 
 ## Install
 
-```bash
-pip install -e .
-```
+> Jump to: [Other AI agents](#other-ai-agents) ·
+> [Alternative install methods](#alternative-install-methods) ·
+> [Develop](#develop)
 
-Python 3.10+. Console entry point: `fluid-postgres-mcp`.
+Python 3.10+. Published on PyPI as
+[`fluid-postgres-mcp`](https://pypi.org/project/fluid-postgres-mcp/);
+console entry point of the same name.
 
-## Use it
-
-Add to Claude Code (or any MCP client):
+### With Claude Code (primary)
 
 ```bash
 claude mcp add fluid-postgres-mcp -- \
-    fluid-postgres-mcp postgresql://reader:pw@host:5432/db
+    uvx fluid-postgres-mcp \
+        postgresql://reader:pw@host:5432/db
 ```
+
+With a long-running tunnel script (see
+[Pre-connect scripts](#pre-connect-scripts) for the protocol the
+script must speak):
+
+```bash
+claude mcp add fluid-postgres-mcp -- \
+    uvx fluid-postgres-mcp \
+        --pre-connect-script /path/to/your-tunnel.sh
+```
+
+### Other AI agents
+
+Brief one-shot snippets — copy-paste, or read your agent's own MCP
+docs for the full story. All entries use `uvx fluid-postgres-mcp`
+so no global install is needed.
+
+**Codex CLI** —
+[docs](https://github.com/openai/codex/blob/main/docs/config.md):
+
+```bash
+codex mcp add fluid-postgres-mcp \
+    --transport stdio \
+    --command "uvx fluid-postgres-mcp postgresql://reader:pw@host:5432/db"
+```
+
+**Cursor CLI** — [docs](https://cursor.com/docs/cli):
+
+```bash
+agent mcp add fluid-postgres-mcp -- \
+    uvx fluid-postgres-mcp postgresql://reader:pw@host:5432/db
+```
+
+**Gemini CLI** — add to `~/.gemini/settings.json`
+([docs](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md)):
+
+```json
+{
+  "mcpServers": {
+    "fluid-postgres-mcp": {
+      "command": "uvx",
+      "args": ["fluid-postgres-mcp", "postgresql://reader:pw@host:5432/db"]
+    }
+  }
+}
+```
+
+**opencode** — add to `opencode.json`
+([docs](https://opencode.ai/docs/mcp-servers)):
+
+```jsonc
+{
+  "mcp": {
+    "fluid-postgres-mcp": {
+      "type": "local",
+      "command": ["uvx", "fluid-postgres-mcp", "postgresql://reader:pw@host:5432/db"]
+    }
+  }
+}
+```
+
+**Kiro CLI** — add to `mcp.json`
+([docs](https://kiro.dev/docs/cli/mcp)):
+
+```json
+{
+  "mcpServers": {
+    "fluid-postgres-mcp": {
+      "command": "uvx",
+      "args": ["fluid-postgres-mcp", "postgresql://reader:pw@host:5432/db"]
+    }
+  }
+}
+```
+
+**Cursor (IDE)** — add to `~/.cursor/mcp.json`
+([docs](https://cursor.com/docs/mcp)):
+
+```json
+{
+  "mcpServers": {
+    "fluid-postgres-mcp": {
+      "command": "uvx",
+      "args": ["fluid-postgres-mcp", "postgresql://reader:pw@host:5432/db"]
+    }
+  }
+}
+```
+
+**Windsurf** — add to `~/.codeium/windsurf/mcp_config.json`
+([docs](https://docs.windsurf.com/plugins/cascade/mcp)):
+
+```json
+{
+  "mcpServers": {
+    "fluid-postgres-mcp": {
+      "command": "uvx",
+      "args": ["fluid-postgres-mcp", "postgresql://reader:pw@host:5432/db"]
+    }
+  }
+}
+```
+
+**Zed** — add to `~/.config/zed/settings.json` under
+`context_servers` (note: *not* `mcpServers`)
+([docs](https://zed.dev/docs/ai/mcp)):
+
+```json
+{
+  "context_servers": {
+    "fluid-postgres-mcp": {
+      "command": "uvx",
+      "args": ["fluid-postgres-mcp", "postgresql://reader:pw@host:5432/db"]
+    }
+  }
+}
+```
+
+### Alternative install methods
+
+If you'd rather have a persistent install than resolve through
+`uvx` on every launch:
+
+```bash
+pipx install fluid-postgres-mcp        # isolated, on $PATH
+pip  install fluid-postgres-mcp        # use a virtualenv to avoid global pollution
+```
+
+From source (no editable; for users who clone but don't want a
+working tree):
+
+```bash
+git clone https://github.com/povesma/fluid-postgres-mcp
+pip install ./fluid-postgres-mcp
+```
+
+After any of these, the agent snippets above can drop `uvx` and
+invoke `fluid-postgres-mcp` directly.
+
+## How to use Fluid Postgres MCP
 
 Tools exposed: `execute_sql`, `status`, `list_schemas`, `list_objects`,
 `get_object_details`, `explain_query`, `analyze_db_health`,
@@ -141,6 +282,70 @@ Working examples used by the test suite — copy and adapt:
   for how the event store is wired and
   [`TESTING-METHODOLOGY.md`](./TESTING-METHODOLOGY.md) for the faults
   we inject against it.
+
+## Develop
+
+Work from a clone:
+
+```bash
+git clone https://github.com/povesma/fluid-postgres-mcp
+cd fluid-postgres-mcp
+pip install -e ".[dev]"
+pytest
+```
+
+Design and fault-injection catalogue:
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) ·
+[`TESTING-METHODOLOGY.md`](./TESTING-METHODOLOGY.md).
+
+### Release
+
+Versioning is SemVer; PyPI is the source of truth. The flow that
+produced v0.1.1:
+
+```bash
+# 1. Bump version in pyproject.toml, then:
+git add pyproject.toml
+git commit -m "chore(release): bump version to X.Y.Z"
+git tag -a vX.Y.Z -m "Release X.Y.Z - <one-line summary>"
+
+# 2. Clean and build (build deps via uvx, no global install needed):
+rm -rf dist/ build/ *.egg-info
+uvx --from build pyproject-build
+
+# 3. Inspect what's actually inside the sdist before publishing.
+#    The wheel only ships src/postgres_mcp; the sdist is allowlisted
+#    in pyproject.toml [tool.hatch.build.targets.sdist], so anything
+#    not in that list must NOT appear here — especially .env, .claude,
+#    tasks/, or any other working-tree-only file:
+tar -tzf dist/*.tar.gz | sort
+.venv/bin/twine check dist/*
+
+# 4. Push commit and tag:
+git push
+git push origin vX.Y.Z
+
+# 5. Upload to PyPI. Twine's auth contract is TWINE_USERNAME /
+#    TWINE_PASSWORD — not PYPI_TOKEN — so source .env to get
+#    PYPI_TOKEN into the environment, then pass it via -u/-p so
+#    the bridge is explicit. `set -a; source .env; set +a` keeps
+#    the value confined to this shell; the token never enters
+#    command line history or any tool's stdin/stdout:
+set -a; source .env; set +a
+.venv/bin/twine upload -u __token__ -p "$PYPI_TOKEN" dist/*
+```
+
+Notes:
+- `uvx --from build pyproject-build` avoids needing `python -m build`
+  installed system-wide; the project's hatchling backend is fetched
+  into an isolated env.
+- The sdist contents are controlled by an explicit allowlist in
+  `[tool.hatch.build.targets.sdist].include`. Any new top-level
+  file you add to the repo is excluded from the sdist by default —
+  add it to the allowlist if it should ship. Treat the step-3
+  `tar -tzf` listing as a release gate, not a curiosity.
+- After tagging, optionally create a GitHub Release from the tag:
+  `gh release create vX.Y.Z -t "vX.Y.Z" -n "<notes>"`.
 
 ## License
 
