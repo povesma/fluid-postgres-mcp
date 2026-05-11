@@ -681,15 +681,20 @@ async def main():
     # Get database URL from environment variable or command line
     database_url = os.environ.get("DATABASE_URI", args.database_url)
 
-    if not database_url:
+    if not database_url and not server_config.reconnect.pre_connect_script:
         raise ValueError(
-            "Error: No database URL provided. Please specify via 'DATABASE_URI' environment variable or command-line argument.",
+            "Error: No database URL provided. Set the 'DATABASE_URI' environment variable, "
+            "pass the URL as the positional argument, or use --pre-connect-script that emits "
+            "[MCP] DB_URL <url>.",
         )
 
     # Initialize database connection pool
     try:
-        await db_connection.pool_connect(database_url)
-        logger.info("Successfully connected to database and initialized connection pool")
+        pool = await db_connection.pool_connect(database_url)
+        if pool is None:
+            logger.info("MCP server started in WAITING_FOR_URL state — pre-connect script has not emitted [MCP] DB_URL yet")
+        else:
+            logger.info("Successfully connected to database and initialized connection pool")
     except Exception as e:
         logger.warning(
             f"Could not connect to database: {obfuscate_password(str(e))}",

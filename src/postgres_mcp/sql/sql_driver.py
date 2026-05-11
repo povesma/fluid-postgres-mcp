@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 class ConnState(str, Enum):
     DISCONNECTED = "disconnected"
+    WAITING_FOR_URL = "waiting_for_url"
     CONNECTED = "connected"
     QUERYING = "querying"
     RECONNECTING = "reconnecting"
@@ -51,6 +52,7 @@ class DbConnPool:
         self._reconnect_count = 0
         self._reconnect_config = reconnect_config or ReconnectConfig()
         self._on_event = on_event
+        self._unrecoverable: bool = False
         self._script_mgr = ConnectionScriptManager(
             script=self._reconnect_config.pre_connect_script,
             hook_timeout=self._reconnect_config.hook_timeout,
@@ -74,6 +76,10 @@ class DbConnPool:
     def last_error(self) -> Optional[str]:
         return self._last_error
 
+    @property
+    def unrecoverable(self) -> bool:
+        return self._unrecoverable
+
     def _emit(self, msg: str) -> None:
         if self._on_event:
             self._on_event(msg)
@@ -92,16 +98,11 @@ class DbConnPool:
                 await cursor.execute("SELECT 1")
         return pool
 
-    async def pool_connect(self, connection_url: Optional[str] = None) -> AsyncConnectionPool:
+    async def pool_connect(self, connection_url: Optional[str] = None) -> Optional[AsyncConnectionPool]:
         if self.pool and self._is_valid:
             return self.pool
 
         url = connection_url or self.connection_url
-        self.connection_url = url
-        if not url:
-            self._is_valid = False
-            self._last_error = "Database connection URL not provided"
-            raise ValueError(self._last_error)
 
         outcome = await self._script_mgr.ensure_ready()
         if not outcome.success:
@@ -112,7 +113,26 @@ class DbConnPool:
 
         if outcome.db_url_override:
             url = outcome.db_url_override
-            self.connection_url = url
+        self.connection_url = url
+
+        if not url:
+            self._is_valid = False
+            if outcome.mode is ScriptMode.LONG_RUNNING:
+                self._state = ConnState.WAITING_FOR_URL
+                self._last_error = (
+                    "Pre-connect script has not emitted [MCP] DB_URL yet; "
+                    "set DATABASE_URI or have the script emit DB_URL."
+                )
+                self._emit(self._last_error)
+                return None
+            self._unrecoverable = True
+            self._state = ConnState.ERROR
+            self._last_error = (
+                "Pre-connect script exited without [MCP] DB_URL and no "
+                "DATABASE_URI or positional URL is set."
+            )
+            self._emit(self._last_error)
+            raise ValueError(self._last_error)
 
         try:
             self.pool = await self._create_pool(url)
@@ -129,12 +149,13 @@ class DbConnPool:
             raise ValueError(f"Connection attempt failed: {obfuscate_password(str(e))}") from e
 
     async def _reconnect_loop(self) -> AsyncConnectionPool:
+        if self._unrecoverable:
+            self._state = ConnState.ERROR
+            msg = self._last_error or "Pre-connect script unrecoverable failure"
+            raise ConnectionError(msg)
         self._state = ConnState.RECONNECTING
         cfg = self._reconnect_config
         url = self.connection_url
-        if not url:
-            self._state = ConnState.ERROR
-            raise ValueError("No connection URL for reconnection")
 
         attempt = 0
         while True:
@@ -160,6 +181,17 @@ class DbConnPool:
             if outcome.db_url_override:
                 url = outcome.db_url_override
                 self.connection_url = url
+
+            if not url:
+                if outcome.mode is ScriptMode.LONG_RUNNING:
+                    self._state = ConnState.WAITING_FOR_URL
+                    self._last_error = "Pre-connect script has not emitted [MCP] DB_URL yet"
+                    continue
+                self._unrecoverable = True
+                self._state = ConnState.ERROR
+                msg = "No connection URL and no script that can supply one"
+                self._last_error = msg
+                raise ConnectionError(msg)
 
             try:
                 self.pool = await self._create_pool(url)

@@ -25,15 +25,19 @@ SERVER_MODULE = "postgres_mcp"
 
 
 def build_server_params(
-    database_url: str,
+    database_url: Optional[str],
     extra_args: list[str] | None = None,
     env_overrides: dict[str, str] | None = None,
 ) -> StdioServerParameters:
-    args = ["-m", SERVER_MODULE, database_url]
+    args = ["-m", SERVER_MODULE]
+    if database_url is not None:
+        args.append(database_url)
     if extra_args:
         args.extend(extra_args)
 
     env = {**os.environ}
+    if database_url is None:
+        env.pop("DATABASE_URI", None)
     if env_overrides:
         env.update(env_overrides)
 
@@ -45,7 +49,7 @@ def build_server_params(
 
 
 async def create_mcp_session(
-    database_url: str,
+    database_url: Optional[str],
     extra_args: list[str] | None = None,
     env_overrides: dict[str, str] | None = None,
 ) -> AsyncGenerator[ClientSession, None]:
@@ -86,7 +90,7 @@ class McpSession:
 
     def __init__(
         self,
-        database_url: str,
+        database_url: Optional[str],
         extra_args: list[str] | None = None,
         env_overrides: dict[str, str] | None = None,
     ) -> None:

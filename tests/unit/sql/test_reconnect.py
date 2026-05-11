@@ -7,6 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from postgres_mcp.config import ReconnectConfig
+from postgres_mcp.sql.connection_script import ScriptMode
+from postgres_mcp.sql.connection_script import ScriptOutcome
 from postgres_mcp.sql.sql_driver import ConnState
 from postgres_mcp.sql.sql_driver import DbConnPool
 
@@ -67,8 +69,9 @@ class TestPoolConnect:
     @pytest.mark.asyncio
     async def test_no_url_raises(self):
         pool = DbConnPool()
-        with pytest.raises(ValueError, match="not provided"):
+        with pytest.raises(ValueError, match="exited without"):
             await pool.pool_connect()
+        assert pool.unrecoverable is True
 
 
 class TestReconnectLoop:
@@ -145,8 +148,14 @@ class TestReconnectLoop:
     async def test_no_url_raises_in_reconnect(self):
         pool = DbConnPool()
         pool._is_valid = False
-        with pytest.raises(ValueError, match="No connection URL"):
-            await pool._reconnect_loop()
+
+        async def fast_sleep(d):
+            return None
+
+        with patch("postgres_mcp.sql.sql_driver.asyncio.sleep", side_effect=fast_sleep):
+            with pytest.raises(ConnectionError, match="No connection URL"):
+                await pool._reconnect_loop()
+        assert pool.unrecoverable is True
 
 
 class TestMarkInvalid:
@@ -271,3 +280,51 @@ class TestEventCallback:
         )
         pool.mark_invalid("connection dropped")
         assert any("Connection lost" in e for e in events)
+
+
+class TestReconnectUnrecoverable:
+    @pytest.mark.asyncio
+    async def test_unrecoverable_exits_immediately(self):
+        cfg = ReconnectConfig(initial_delay=10.0)
+        pool = DbConnPool(connection_url="postgresql://test:test@localhost/db", reconnect_config=cfg)
+        pool._unrecoverable = True
+        pool._last_error = "exited without DB_URL"
+        slept = []
+
+        async def fake_sleep(d):
+            slept.append(d)
+
+        with patch("postgres_mcp.sql.sql_driver.asyncio.sleep", side_effect=fake_sleep):
+            with pytest.raises(ConnectionError, match="exited without DB_URL"):
+                await pool._reconnect_loop()
+        assert slept == []
+        assert pool.state == ConnState.ERROR
+
+    @pytest.mark.asyncio
+    async def test_long_running_late_db_url_succeeds(self):
+        cfg = ReconnectConfig(pre_connect_script="/bin/true", initial_delay=0.01, max_delay=0.01)
+        pool = DbConnPool(connection_url=None, reconnect_config=cfg)
+        outcomes = [
+            ScriptOutcome(success=True, mode=ScriptMode.LONG_RUNNING, db_url_override=None),
+            ScriptOutcome(
+                success=True,
+                mode=ScriptMode.LONG_RUNNING,
+                db_url_override="postgresql://late:pw@host/db",
+            ),
+        ]
+        pool._script_mgr.ensure_ready = AsyncMock(side_effect=outcomes)
+        mock_pool = AsyncMock()
+
+        async def fake_create(url):
+            return mock_pool
+
+        pool._create_pool = fake_create
+
+        async def fast_sleep(d):
+            return None
+
+        with patch("postgres_mcp.sql.sql_driver.asyncio.sleep", side_effect=fast_sleep):
+            result = await pool._reconnect_loop()
+        assert result is mock_pool
+        assert pool.state == ConnState.CONNECTED
+        assert pool.connection_url == "postgresql://late:pw@host/db"

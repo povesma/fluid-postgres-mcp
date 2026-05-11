@@ -188,6 +188,58 @@ async def test_url_rotation_across_script_respawn(tmp_path, k8s_pg_connection_st
 
 
 @pytest.mark.asyncio
+async def test_script_is_sole_url_source_waiting_then_connected(tmp_path, k8s_pg_connection_string):
+    """FR-3 smoke: register MCP with NO DATABASE_URI / positional URL, only
+    --pre-connect-script. Script delays [MCP] DB_URL by ~2s. The server must
+    start in WAITING_FOR_URL, then transition to CONNECTED once DB_URL is
+    emitted, with `status` reflecting the final CONNECTED state."""
+    real_url, _ = k8s_pg_connection_string
+
+    delayed_script = tmp_path / "delayed.sh"
+    delayed_script.write_text(
+        dedent(f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            sleep 2
+            printf '[MCP] DB_URL %s\\n' "{real_url}"
+            printf '[MCP] READY_TO_CONNECT\\n'
+            exec sleep 2147483647
+            """)
+    )
+    delayed_script.chmod(0o755)
+
+    extra = [
+        "--pre-connect-script",
+        str(delayed_script),
+        "--hook-timeout",
+        "15.0",
+    ]
+
+    async with McpSession(None, extra_args=extra) as session:
+        # Eventually the server reaches CONNECTED. Poll status up to ~10s.
+        connected = False
+        for _ in range(40):
+            try:
+                result = await call_tool(session, "execute_sql", {"sql": "SELECT 1"})
+                if not result.isError:
+                    connected = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.25)
+        assert connected, "execute_sql never succeeded after delayed DB_URL"
+
+        status = await call_tool(session, "status", {"events": 50})
+        sj = _parse_status(extract_text(status))
+        msgs = _event_messages(sj)
+        # Either we caught WAITING_FOR_URL in the event log, or the connection
+        # came back fast enough that only the CONNECTED line is present. Both
+        # are valid; the success criterion is "we connected without
+        # DATABASE_URI / positional URL."
+        assert any("Connected to database" in m or "Reconnected" in m for m in msgs), msgs
+
+
+@pytest.mark.asyncio
 async def test_malformed_db_url_falls_back_to_configured_url(tmp_path, k8s_pg_connection_string):
     """Fixture emits a malformed [MCP] DB_URL line first, then a valid
     [MCP] READY_TO_CONNECT. MCP must fall back to its configured URL,

@@ -275,6 +275,11 @@ Working examples used by the test suite — copy and adapt:
   `[MCP] DB_URL` payload → warning event recorded, prior override
   retained, MCP falls back to the configured URL. Unknown `[MCP]`
   keywords are warned once per keyword and ignored.
+  Long-running script alive but no `[MCP] DB_URL` yet → state is
+  `WAITING_FOR_URL`, the reconnect loop keeps polling, recoverable
+  as soon as the script emits a URL. Run-and-exit script exited
+  *without* emitting `DB_URL` and no `DATABASE_URI` / positional URL
+  is set → `_unrecoverable=True`, state `ERROR`, no further retries.
 - **Diagnose without shelling onto the box.** All script lifecycle
   events are exposed via the `status` MCP tool — `started`/`pid`,
   `READY_TO_CONNECT`, `DB_URL` (host/db only, password redacted),
@@ -304,8 +309,10 @@ Versioning is SemVer; PyPI is the source of truth. The flow that
 produced v0.1.1:
 
 ```bash
-# 1. Bump version in pyproject.toml, then:
-git add pyproject.toml
+# 1. Add a `## [X.Y.Z] - YYYY-MM-DD` section to CHANGELOG.md
+#    (Added / Changed / Fixed / Removed) and bump version in
+#    pyproject.toml. Both go in the release commit:
+git add CHANGELOG.md pyproject.toml
 git commit -m "chore(release): bump version to X.Y.Z"
 git tag -a vX.Y.Z -m "Release X.Y.Z - <one-line summary>"
 
@@ -344,8 +351,13 @@ Notes:
   file you add to the repo is excluded from the sdist by default —
   add it to the allowlist if it should ship. Treat the step-3
   `tar -tzf` listing as a release gate, not a curiosity.
-- After tagging, optionally create a GitHub Release from the tag:
-  `gh release create vX.Y.Z -t "vX.Y.Z" -n "<notes>"`.
+- After tagging, optionally create a GitHub Release from the tag,
+  using the matching `CHANGELOG.md` section as the body:
+  `gh release create vX.Y.Z -t "vX.Y.Z" -F <(awk '/^## \[X.Y.Z\]/,/^## \[/' CHANGELOG.md | sed '$d')`.
+- `CHANGELOG.md` follows
+  [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/);
+  the entry is mandatory before the version bump (treat it as a
+  release gate alongside the `tar -tzf` listing).
 
 ## License
 
