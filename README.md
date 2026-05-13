@@ -20,6 +20,23 @@ Python 3.10+. Published on PyPI as
 [`fluid-postgres-mcp`](https://pypi.org/project/fluid-postgres-mcp/);
 console entry point of the same name.
 
+### Verify install
+
+Before wiring the MCP into your agent, confirm the install actually
+resolved its dependencies:
+
+```bash
+uvx fluid-postgres-mcp --version    # prints "fluid-postgres-mcp X.Y.Z", exit 0
+uvx fluid-postgres-mcp --help       # prints usage, exit 0
+```
+
+Exit 0 from either command means the package downloaded and every
+runtime dependency imported successfully. A Python traceback or
+non-zero exit means at least one import failed — typically a missing
+system library (e.g. `libpq` on minimal Linux images) or a broken
+`uvx` cache. Fix that before continuing; an agent registration
+against a broken install fails silently at first tool call.
+
 ### With Claude Code (primary)
 
 ```bash
@@ -211,40 +228,157 @@ If the script process dies (tunnel broke), the MCP detects it within
 ~1 second, respawns the script, and reconnects with whatever URL the
 new instance emits — which is how credential/URL rotation works.
 
-### AWS SSM example
+### AWS SSM examples
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-LOCAL_PORT=15432
+Two vendored Python reference scripts cover the common AWS topologies.
+Each is a single drop-in file: copy it, set the env vars, point
+`--pre-connect-script` at it. Both speak the long-running protocol
+described above; both supervise their SSM child and exit on its
+death so fluid-postgres-mcp respawns them.
 
-aws ssm start-session \
-    --target "$EC2_INSTANCE_ID" \
-    --document-name AWS-StartPortForwardingSession \
-    --parameters "portNumber=5432,localPortNumber=$LOCAL_PORT" \
-    >/dev/null 2>&1 &
-TUNNEL_PID=$!
+#### Choosing a topology
 
-for _ in $(seq 1 30); do
-    nc -z 127.0.0.1 "$LOCAL_PORT" 2>/dev/null && break
-    sleep 1
-done
+| Topology | Script | When |
+|---|---|---|
+| **EC2-direct** | [`scripts/examples/aws-ssm-ec2-tunnel.py`](./scripts/examples/aws-ssm-ec2-tunnel.py) | PostgreSQL runs on the EC2 instance itself, or the EC2 hosts a userspace proxy you control. |
+| **RDS-via-EC2** | [`scripts/examples/aws-ssm-rds-tunnel.py`](./scripts/examples/aws-ssm-rds-tunnel.py) | PostgreSQL runs on RDS. The EC2 is a pure SSM forwarder — no PG, no proxy on it. Uses `AWS-StartPortForwardingSessionToRemoteHost`. |
 
-PW=$(aws ssm get-parameter --name /db/password --with-decryption \
-    --query Parameter.Value --output text)
+True bastion-less SSM-to-RDS is not possible: `ssm:StartSession`
+requires an SSM-managed target, and RDS is not one. If you cannot
+keep an EC2 in the loop, look at RDS IAM authentication or the EC2
+Instance Connect Endpoint (EICE) — both are outside the SSM
+port-forwarding model these scripts use.
 
-printf '[MCP] DB_URL postgresql://reader:%s@127.0.0.1:%s/db\n' "$PW" "$LOCAL_PORT"
-printf '[MCP] READY_TO_CONNECT\n'
+Passwords in `DB_URL` are obfuscated in every fluid-postgres-mcp
+event message and log line.
 
-wait "$TUNNEL_PID"   # script exits when the tunnel dies
+#### Environment variables
+
+The scripts are configured entirely via environment variables,
+passed through your agent's MCP registration (e.g. `claude mcp add
+… -e KEY=VALUE`).
+
+| Variable | EC2-direct | RDS-via-EC2 | Purpose |
+|---|---|---|---|
+| `EC2_INSTANCE_ID` | required | required | SSM target instance |
+| `EC2_REGION` | required | required | AWS region of the instance |
+| `RDS_ENDPOINT` | — | required | RDS endpoint hostname |
+| `DB_NAME` | required | required | PostgreSQL database name |
+| `DB_USERNAME` | required | required | PostgreSQL user |
+| `DB_PASSWD` | required | required | PostgreSQL password |
+| `DB_HOST` | optional (`localhost`) | — | Host PG listens on (EC2-direct only) |
+| `DB_PORT` | optional (`5432`) | optional (`5432`) | PostgreSQL port |
+| `ASSUME_ROLE_ARN` | optional | optional | Role to assume on top of base credentials |
+| `AWS_PROFILE` | optional | optional | Profile (overridden by `--profile` flag) |
+
+Authentication precedence (highest first): `--profile` CLI flag →
+`AWS_PROFILE` → SDK default credential chain (env vars,
+`~/.aws/credentials`, instance metadata, …). If `ASSUME_ROLE_ARN`
+is set, the resolved base credentials drive an `sts:AssumeRole`
+call and the resulting STS credentials drive every subsequent AWS
+call.
+
+#### Required AWS permissions
+
+The principal that ends up driving the AWS calls (after AssumeRole,
+if any) needs:
+
+```
+sts:AssumeRole                       (only if ASSUME_ROLE_ARN set)
+sts:GetCallerIdentity                (diagnostic)
+ec2:DescribeInstances
+ec2:StartInstances                   (only to wake a stopped host)
+ssm:DescribeInstanceInformation
+ssm:StartSession                     (see below for resource scope)
+ssm:TerminateSession                 (on the session ARN — clean teardown)
 ```
 
-Passwords are obfuscated in all event messages and logs.
+The `ssm:StartSession` resource scope differs by topology:
+
+- **EC2-direct**: target = the EC2 instance ARN; document =
+  `AWS-StartPortForwardingSession`.
+- **RDS-via-EC2**: target = the EC2 instance ARN; document =
+  `AWS-StartPortForwardingSessionToRemoteHost`. The EC2's security
+  group must allow egress to RDS:5432; the RDS security group must
+  allow ingress from the EC2 security group.
+
+#### Stdout protocol
+
+Both scripts emit exactly two lines on stdout (everything else goes
+to stderr):
+
+```
+[MCP] DB_URL postgresql://<user>:<pw>@127.0.0.1:<local_port>/<db>?...
+[MCP] READY_TO_CONNECT
+```
+
+After these the script stays alive supervising the SSM child. Exit
+on child death is the signal to fluid-postgres-mcp that the tunnel
+is gone and the script should be respawned — that is the recovery
+loop.
+
+#### EC2-direct
+
+PostgreSQL is reachable on the EC2 itself (running there, or
+proxied by the EC2 to a backend it controls). The SSM session
+terminates on the EC2 and forwards traffic to whatever
+`DB_HOST:DB_PORT` resolves to from the EC2's perspective
+(default `localhost:5432`).
+
+```bash
+claude mcp add my-pg \
+  -e EC2_INSTANCE_ID=i-0123456789abcdef0 \
+  -e EC2_REGION=eu-central-1 \
+  -e DB_NAME=mydb -e DB_USERNAME=reader -e DB_PASSWD='s3cr3t' \
+  -- uvx fluid-postgres-mcp \
+       --pre-connect-script /path/to/aws-ssm-ec2-tunnel.py
+```
+
+#### RDS-via-EC2
+
+PostgreSQL runs on RDS. The EC2 is a pure SSM forwarder — no PG
+process, no userspace proxy. The SSM session uses
+`AWS-StartPortForwardingSessionToRemoteHost` with `host=$RDS_ENDPOINT`,
+so traffic flows
+`localhost:<local_port> → EC2 (SSM forwarder) → $RDS_ENDPOINT:5432`.
+
+```bash
+claude mcp add my-pg \
+  -e EC2_INSTANCE_ID=i-0123456789abcdef0 \
+  -e EC2_REGION=eu-central-1 \
+  -e RDS_ENDPOINT=my-db.abcdef.eu-central-1.rds.amazonaws.com \
+  -e DB_NAME=mydb -e DB_USERNAME=reader -e DB_PASSWD='s3cr3t' \
+  -- uvx fluid-postgres-mcp \
+       --pre-connect-script /path/to/aws-ssm-rds-tunnel.py
+```
+
+#### Smoke
+
+After registering, restart your agent and run a real-data query —
+not `SELECT 1`. A constant query proves only that something
+answered on the socket; it doesn't prove the right DB was mapped
+or that rows flow:
+
+```sql
+SELECT count(*) FROM <a-known-populated-table>;
+```
+
+Expect a non-trivial count you can recognise. Zero / empty / NULL
+is a failure, not a pass.
 
 ### Reference scripts
 
-Working examples used by the test suite — copy and adapt:
+Working examples — copy and adapt:
 
+- [`scripts/examples/aws-ssm-ec2-tunnel.py`](./scripts/examples/aws-ssm-ec2-tunnel.py)
+  — production-shaped Python: credential resolution, optional
+  `sts:AssumeRole`, EC2 wake, SSM agent readiness wait, port-forward,
+  port-open probe, PG liveness probe, handshake, signal teardown,
+  remote session termination. EC2-direct topology.
+- [`scripts/examples/aws-ssm-rds-tunnel.py`](./scripts/examples/aws-ssm-rds-tunnel.py)
+  — same lifecycle as above, but uses
+  `AWS-StartPortForwardingSessionToRemoteHost` so the EC2 acts as a
+  pure SSM forwarder to an RDS endpoint.
 - [`tests/e2e/fixtures/long_running_passthrough.sh`](./tests/e2e/fixtures/long_running_passthrough.sh)
   — minimal long-running script: emits `DB_URL` + `READY_TO_CONNECT`,
   then blocks on `exec sleep` until SIGTERM. Useful as a starting

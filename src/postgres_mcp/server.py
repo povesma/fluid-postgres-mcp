@@ -3,8 +3,11 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import signal
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any
 from typing import List
 from typing import Literal
@@ -622,8 +625,42 @@ async def get_top_queries(
         return format_error_response(str(e))
 
 
-async def main():
+_PYPROJECT_VERSION_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _resolve_version() -> str:
+    """Resolve the running package version from pyproject.toml.
+
+    Source checkouts ship pyproject.toml on disk — read it directly so
+    bumping `[project].version` is the *only* edit needed.
+    Wheels do not ship pyproject.toml; fall back to installer-recorded
+    metadata, which was written from the same pyproject.toml at build
+    time.
+    """
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            m = _PYPROJECT_VERSION_RE.search(pyproject.read_text(encoding="utf-8"))
+            if m:
+                return m.group(1)
+        except OSError:
+            pass
+
+    try:
+        return _pkg_version("fluid-postgres-mcp")
+    except PackageNotFoundError:
+        return "unknown (source checkout)"
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="fluid-postgres-mcp — Fluid PostgreSQL MCP Server")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"fluid-postgres-mcp {_resolve_version()}",
+    )
     parser.add_argument("database_url", help="Database connection URL", nargs="?")
     parser.add_argument(
         "--transport",
@@ -664,7 +701,11 @@ async def main():
     parser.add_argument("--hook-timeout", type=float, default=None, help="Pre-connect hook timeout in seconds")
     parser.add_argument("--event-buffer-size", type=int, default=None, help="Ring buffer size per event category")
     parser.add_argument("--output-dir", type=str, default=None, help="Default directory for file output")
+    return parser
 
+
+async def main():
+    parser = _build_parser()
     args = parser.parse_args()
 
     from .config import parse_config

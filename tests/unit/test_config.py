@@ -162,3 +162,76 @@ class TestMainArgvNoUrl:
 
         result = await _short_main()
         assert result is True
+
+
+class TestVersionFlag:
+    """--version flag: prints `fluid-postgres-mcp <semver>\\n`, exits 0.
+
+    Falls back to `unknown (source checkout)` when the package metadata
+    is not registered (e.g. running from a fresh git checkout without
+    `pip install -e .`).
+    """
+
+    def test_version_flag_prints_semver_and_exits_zero(self, capsys, monkeypatch):
+        from postgres_mcp import server
+
+        monkeypatch.setattr("sys.argv", ["fluid-postgres-mcp", "--version"])
+
+        with pytest.raises(SystemExit) as ei:
+            server._build_parser().parse_args(["--version"])
+
+        assert ei.value.code == 0
+        captured = capsys.readouterr()
+        # argparse `version` action prints to stdout.
+        out = captured.out.strip()
+        assert out.startswith("fluid-postgres-mcp ")
+        # Either real semver or the documented fallback.
+        suffix = out.removeprefix("fluid-postgres-mcp ")
+        assert suffix, "version suffix must not be empty"
+
+    def test_version_flag_matches_pyproject_toml(self, capsys, tmp_path):
+        """The CLI version MUST equal pyproject.toml's [project].version.
+
+        This is the contract: bump pyproject.toml, --version updates.
+        """
+        import re
+        from pathlib import Path
+
+        from postgres_mcp import server
+
+        pyproject = Path(server.__file__).resolve().parents[2] / "pyproject.toml"
+        m = re.search(r'^\s*version\s*=\s*"([^"]+)"', pyproject.read_text(), re.MULTILINE)
+        assert m, "pyproject.toml must declare [project].version"
+        expected = m.group(1)
+
+        with pytest.raises(SystemExit) as ei:
+            server._build_parser().parse_args(["--version"])
+
+        assert ei.value.code == 0
+        assert capsys.readouterr().out.strip() == f"fluid-postgres-mcp {expected}"
+
+    def test_version_flag_fallback_when_pyproject_missing_and_package_not_found(self, capsys, monkeypatch):
+        """In a wheel install with no pyproject.toml on disk AND no installer
+        metadata, fall back to a descriptive string instead of crashing."""
+        import pathlib
+
+        from postgres_mcp import server
+
+        real_is_file = pathlib.Path.is_file
+        monkeypatch.setattr(
+            pathlib.Path,
+            "is_file",
+            lambda self: False if "pyproject" in self.name else real_is_file(self),
+        )
+
+        def _raise(_name):
+            from importlib.metadata import PackageNotFoundError
+            raise PackageNotFoundError("fluid-postgres-mcp")
+
+        monkeypatch.setattr(server, "_pkg_version", _raise)
+
+        with pytest.raises(SystemExit) as ei:
+            server._build_parser().parse_args(["--version"])
+
+        assert ei.value.code == 0
+        assert capsys.readouterr().out.strip() == "fluid-postgres-mcp unknown (source checkout)"
