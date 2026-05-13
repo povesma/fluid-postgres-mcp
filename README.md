@@ -471,9 +471,23 @@ git push origin vX.Y.Z
 #    PYPI_TOKEN into the environment, then pass it via -u/-p so
 #    the bridge is explicit. `set -a; source .env; set +a` keeps
 #    the value confined to this shell; the token never enters
-#    command line history or any tool's stdin/stdout:
+#    command line history or any tool's stdin/stdout. If you tee
+#    or capture the output anywhere (assistant logs, CI artefacts),
+#    pipe through a redactor so a stray echoed token can't leak:
+#      … | sed 's/pypi-[A-Za-z0-9_-]*/pypi-<REDACTED>/g'
 set -a; source .env; set +a
 .venv/bin/twine upload -u __token__ -p "$PYPI_TOKEN" dist/*
+
+# 6. Publish a GitHub Release from the tag, body sourced from the
+#    matching CHANGELOG section. The awk extracts the [X.Y.Z] block;
+#    sed '$d' drops the next-version header that bounds the range:
+gh release create vX.Y.Z -t "vX.Y.Z" \
+    -F <(awk '/^## \[X.Y.Z\]/,/^## \[/' CHANGELOG.md | sed '$d')
+
+# 7. Smoke the published artefact — proves the upload actually
+#    resolves end-to-end, separate from your local build:
+uvx fluid-postgres-mcp --version    # expect "fluid-postgres-mcp X.Y.Z"
+uvx fluid-postgres-mcp --help       # expect non-empty usage, exit 0
 ```
 
 Notes:
@@ -485,9 +499,6 @@ Notes:
   file you add to the repo is excluded from the sdist by default —
   add it to the allowlist if it should ship. Treat the step-3
   `tar -tzf` listing as a release gate, not a curiosity.
-- After tagging, optionally create a GitHub Release from the tag,
-  using the matching `CHANGELOG.md` section as the body:
-  `gh release create vX.Y.Z -t "vX.Y.Z" -F <(awk '/^## \[X.Y.Z\]/,/^## \[/' CHANGELOG.md | sed '$d')`.
 - `CHANGELOG.md` follows
   [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/);
   the entry is mandatory before the version bump (treat it as a
