@@ -439,26 +439,26 @@ Design and fault-injection catalogue:
 
 ### Release
 
-Versioning is SemVer; PyPI is the source of truth. The flow that
-produced v0.1.1:
+Versioning is SemVer. **PyPI is the point of no return** — a
+version uploaded there cannot be edited or reuploaded, only
+yanked. Everything reversible happens before PyPI publish; GitHub
+Release stays in draft until PyPI succeeds. A release is not done
+until **all seven steps** are completed.
 
 ```bash
-# 1. Add a `## [X.Y.Z] - YYYY-MM-DD` section to CHANGELOG.md
-#    (Added / Changed / Fixed / Removed) and bump version in
-#    pyproject.toml. Both go in the release commit:
+# 1. CHANGELOG + version bump (release commit):
 git add CHANGELOG.md pyproject.toml
 git commit -m "chore(release): bump version to X.Y.Z"
 git tag -a vX.Y.Z -m "Release X.Y.Z - <one-line summary>"
 
-# 2. Clean and build (build deps via uvx, no global install needed):
+# 2. Clean and build (build deps via uvx):
 rm -rf dist/ build/ *.egg-info
 uvx --from build pyproject-build
 
-# 3. Inspect what's actually inside the sdist before publishing.
-#    The wheel only ships src/postgres_mcp; the sdist is allowlisted
-#    in pyproject.toml [tool.hatch.build.targets.sdist], so anything
-#    not in that list must NOT appear here — especially .env, .claude,
-#    tasks/, or any other working-tree-only file:
+# 3. Inspect sdist + twine check. The wheel only ships
+#    src/postgres_mcp; the sdist is allowlisted in pyproject.toml
+#    [tool.hatch.build.targets.sdist], so .env, .claude, tasks/
+#    must NOT appear:
 tar -tzf dist/*.tar.gz | sort
 .venv/bin/twine check dist/*
 
@@ -466,26 +466,30 @@ tar -tzf dist/*.tar.gz | sort
 git push
 git push origin vX.Y.Z
 
-# 5. Upload to PyPI. Twine's auth contract is TWINE_USERNAME /
-#    TWINE_PASSWORD — not PYPI_TOKEN — so source .env to get
-#    PYPI_TOKEN into the environment, then pass it via -u/-p so
-#    the bridge is explicit. `set -a; source .env; set +a` keeps
-#    the value confined to this shell; the token never enters
-#    command line history or any tool's stdin/stdout. If you tee
-#    or capture the output anywhere (assistant logs, CI artefacts),
-#    pipe through a redactor so a stray echoed token can't leak:
+# 5. Draft GitHub Release. Body is HAND-WRITTEN per the Release
+#    body rule above — do not awk-extract from CHANGELOG (the
+#    audiences and styles differ). Draft state lets you proof-read
+#    against the rendered Release page before PyPI is committed.
+$EDITOR /tmp/release-vX.Y.Z.md   # write the executive summary
+gh release create vX.Y.Z --draft -t "vX.Y.Z" -F /tmp/release-vX.Y.Z.md
+# Open the draft URL printed above, review the rendered body.
+# Fix with `gh release edit vX.Y.Z --notes-file …` — still cheap;
+# PyPI is not yet involved.
+
+# 6. Upload to PyPI — *point of no return*. Twine's auth contract
+#    is TWINE_USERNAME / TWINE_PASSWORD, not PYPI_TOKEN, so source
+#    .env to get PYPI_TOKEN into the environment and pass via -u/-p.
+#    `set -a; source .env; set +a` keeps the value in this shell;
+#    the token never enters argv or command history. If output
+#    might be teed (assistant logs, CI), pipe through a redactor:
 #      … | sed 's/pypi-[A-Za-z0-9_-]*/pypi-<REDACTED>/g'
 set -a; source .env; set +a
 .venv/bin/twine upload -u __token__ -p "$PYPI_TOKEN" dist/*
 
-# 6. Publish a GitHub Release from the tag, body sourced from the
-#    matching CHANGELOG section. The awk extracts the [X.Y.Z] block;
-#    sed '$d' drops the next-version header that bounds the range:
-gh release create vX.Y.Z -t "vX.Y.Z" \
-    -F <(awk '/^## \[X.Y.Z\]/,/^## \[/' CHANGELOG.md | sed '$d')
-
-# 7. Smoke the published artefact — proves the upload actually
-#    resolves end-to-end, separate from your local build:
+# 7. Flip the GH Release out of draft and smoke the published
+#    artefact end-to-end. Both must pass before the release is
+#    considered done:
+gh release edit vX.Y.Z --draft=false
 uvx fluid-postgres-mcp --version    # expect "fluid-postgres-mcp X.Y.Z"
 uvx fluid-postgres-mcp --help       # expect non-empty usage, exit 0
 ```
@@ -503,14 +507,28 @@ Notes:
   [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/);
   the entry is mandatory before the version bump (treat it as a
   release gate alongside the `tar -tzf` listing).
-- **Changelog audience & size.** Entries are for **users of the
-  package**, not contributors. Each bullet answers "what do I do
-  or expect differently?" — skip internal symbol names; those
-  belong in the commit message. Size guide by SemVer level:
-  *patch* (0.1.x → 0.1.y): 1–4 bullets, ≤ ~10 lines body;
-  *minor* (0.x → 0.y): 3–8 bullets grouped Added/Changed/Fixed,
-  ≤ ~25 lines; *major*: lead with a 1-paragraph migration note,
-  then as long as it needs.
+- **CHANGELOG.md authoring.** *Audience: someone deciding whether
+  to upgrade, and someone reconstructing history later (downstream
+  packagers, future-you, anyone tracing a regression to a version).*
+  Comprehensive but ruthless with wording. Include all user-facing
+  changes, categorised by impact (Breaking, Security, Added,
+  Changed, Fixed, Deprecated). Each item: one sentence stating the
+  change and its user impact. Add a second sentence only when a
+  reader must take action (migration step, version range affected,
+  workaround) — never to explain rationale or implementation. Drop
+  the *how* and the *why*; if rationale matters, it lives in the
+  commit message or PR.
+- **GitHub Release body authoring.** *Audience: someone glancing
+  at the release page or a notification feed, deciding whether
+  this release needs their attention right now.* Executive summary.
+  Open with the most consequential change in one sentence; if the
+  release has a coherent theme, name it — if not, don't invent one.
+  Follow with a "Highlights" bullet list of anything a reader of
+  the release page needs to know without opening the CHANGELOG.
+  Breaking, security, deprecations, platform/Python/dependency
+  shifts, and major features will usually qualify; pure bug fixes
+  and internal changes will not. Link to the CHANGELOG for the
+  rest. Hand-written, not awk-extracted.
 
 ## License
 
