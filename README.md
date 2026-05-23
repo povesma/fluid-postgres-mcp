@@ -443,55 +443,76 @@ Versioning is SemVer. **PyPI is the point of no return** — a
 version uploaded there cannot be edited or reuploaded, only
 yanked. Everything reversible happens before PyPI publish; GitHub
 Release stays in draft until PyPI succeeds. A release is not done
-until **all seven steps** are completed.
+until git tag, GitHub Release, and PyPI all agree.
+
+The release flow is automated by [`scripts/release.sh`](./scripts/release.sh).
+The script runs the seven steps below as a single transaction:
+pre-PyPI failures roll back (delete local tag + draft Release);
+post-PyPI failures surface loudly with the exact recovery command.
+[`scripts/release-check.sh`](./scripts/release-check.sh) asserts the
+three-source agreement (tag / GH Release / PyPI) for any version —
+run it any time to catch half-released states.
+
+**Author work** (the script verifies but does not author):
+
+1. Add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` per
+   the CHANGELOG.md authoring rule below.
+2. Bump `version = "X.Y.Z"` in `pyproject.toml`.
+3. Run `scripts/release.sh` — see modes below.
+
+**Non-interactive mode** (AI agent or scripted, all inputs supplied):
 
 ```bash
-# 1. CHANGELOG + version bump (release commit):
-git add CHANGELOG.md pyproject.toml
-git commit -m "chore(release): bump version to X.Y.Z"
-git tag -a vX.Y.Z -m "Release X.Y.Z - <one-line summary>"
+scripts/release.sh --version X.Y.Z \
+    --release-body-file /path/to/release-body.md \
+    --yes
+```
 
-# 2. Clean and build (build deps via uvx):
+**Interactive mode** (human-driven, missing inputs prompt
+`$EDITOR` pre-populated with the relevant authoring rule):
+
+```bash
+scripts/release.sh                    # prompts for version + Release body
+scripts/release.sh --version 0.1.4    # prompts for Release body only
+```
+
+The seven steps the script orchestrates (for reference, and for the
+rare case the script fails partway and a step must be re-run by hand):
+
+```bash
+# 1. Tag — version + CHANGELOG already committed by the author
+git tag -a vX.Y.Z -m "Release X.Y.Z"
+
+# 2. Clean and build
 rm -rf dist/ build/ *.egg-info
 uvx --from build pyproject-build
 
-# 3. Inspect sdist + twine check. The wheel only ships
-#    src/postgres_mcp; the sdist is allowlisted in pyproject.toml
-#    [tool.hatch.build.targets.sdist], so .env, .claude, tasks/
-#    must NOT appear:
+# 3. Inspect sdist + twine check (script rejects .env / .claude /
+#    tasks leaks via the sdist allowlist)
 tar -tzf dist/*.tar.gz | sort
 .venv/bin/twine check dist/*
 
-# 4. Push commit and tag:
+# 4. Push commit and tag
 git push
 git push origin vX.Y.Z
 
 # 5. Draft GitHub Release. Body is HAND-WRITTEN per the Release
-#    body rule above — do not awk-extract from CHANGELOG (the
+#    body rule below — never awk-extracted from CHANGELOG (the
 #    audiences and styles differ). Draft state lets you proof-read
-#    against the rendered Release page before PyPI is committed.
-$EDITOR /tmp/release-vX.Y.Z.md   # write the executive summary
+#    before PyPI is committed.
 gh release create vX.Y.Z --draft -t "vX.Y.Z" -F /tmp/release-vX.Y.Z.md
-# Open the draft URL printed above, review the rendered body.
-# Fix with `gh release edit vX.Y.Z --notes-file …` — still cheap;
-# PyPI is not yet involved.
 
 # 6. Upload to PyPI — *point of no return*. Twine's auth contract
 #    is TWINE_USERNAME / TWINE_PASSWORD, not PYPI_TOKEN, so source
 #    .env to get PYPI_TOKEN into the environment and pass via -u/-p.
-#    `set -a; source .env; set +a` keeps the value in this shell;
-#    the token never enters argv or command history. If output
-#    might be teed (assistant logs, CI), pipe through a redactor:
-#      … | sed 's/pypi-[A-Za-z0-9_-]*/pypi-<REDACTED>/g'
+#    The script redacts pypi-* patterns from any echoed output.
 set -a; source .env; set +a
 .venv/bin/twine upload -u __token__ -p "$PYPI_TOKEN" dist/*
 
 # 7. Flip the GH Release out of draft and smoke the published
-#    artefact end-to-end. Both must pass before the release is
-#    considered done:
+#    artefact end-to-end.
 gh release edit vX.Y.Z --draft=false
 uvx fluid-postgres-mcp --version    # expect "fluid-postgres-mcp X.Y.Z"
-uvx fluid-postgres-mcp --help       # expect non-empty usage, exit 0
 ```
 
 Notes:

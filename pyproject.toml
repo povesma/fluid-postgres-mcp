@@ -35,6 +35,8 @@ packages = ["src/postgres_mcp"]
 include = [
     "src/postgres_mcp",
     "scripts/examples/*.py",
+    "scripts/release.sh",
+    "scripts/release-check.sh",
     "README.md",
     "ARCHITECTURE.md",
     "TESTING-METHODOLOGY.md",
