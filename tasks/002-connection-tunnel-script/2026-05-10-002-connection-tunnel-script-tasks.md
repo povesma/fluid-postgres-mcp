@@ -622,15 +622,17 @@ marked "amendment".
 
 - [ ] 10.0 **User Story:** As a script author on POSIX, I want
   teardown to send `SIGTERM`, wait a 5 s grace period, then kill, so
-  that my script's cleanup handler stops its tunnel children [6/0]
-  - [ ] 10.1 Extend `FakeProcess` in `test_connection_script.py`
+  that my script's cleanup handler stops its tunnel children [7/0]
+  - [X] 10.1 Extend `FakeProcess` in `test_connection_script.py`
     with an `ignore_terminate` option (terminate records the call
     but does not set an exit code). Change the existing assertion
     at `test_connection_script.py:333` from `killed is True` to
     `terminated is True` (the only existing assertion the PRD lets
     change). No other existing assertion changes. The changed test
     is expected red until 10.3. [verify: code-only]
-  - [ ] 10.2 Write teardown unit tests (patch
+    → also added `FakeProcess.calls` (terminate/kill/reader-cancelled
+      order) for 10.2 (2026-10-09)
+  - [X] 10.2 Write teardown unit tests (patch
     `_TERMINATE_GRACE_S` to 0.05): script exits on terminate →
     `terminated` and not `killed`, event `stop requested (SIGTERM)`;
     `ignore_terminate` → `killed` after grace, event
@@ -638,7 +640,9 @@ marked "amendment".
     neither called; stop signal sent before the reader task is
     cancelled (assert via a fake stdout that records when it is
     closed). Tests fail. [verify: auto-test]
-  - [ ] 10.3 Implement POSIX teardown in `_teardown()`
+    → 4 tests in TestGracefulTeardown; red as expected
+      (`_TERMINATE_GRACE_S` missing) [live] (2026-10-09)
+  - [X] 10.3 Implement POSIX teardown in `_teardown()`
     (`connection_script.py:318-338`) per tech-design §Teardown:
     add module constant `_TERMINATE_GRACE_S = 5.0`; only when
     `returncode is None`; `terminate()` → `wait_for(proc.wait(),
@@ -647,11 +651,17 @@ marked "amendment".
     events. README "Pre-connect scripts": on POSIX the script gets
     `SIGTERM`, then `SIGKILL` after 5 s. 10.2 passes; full unit
     suite green. [verify: auto-test]
-  - [ ] 10.4 Change `_spawn()` to inherit stderr (drop
+    → waits poll `returncode` instead of `proc.wait()` (Python 3.12
+      wait blocks on open pipes; tech-design updated); unit suite
+      288 passed, 1 xfailed; README authoring note added [live]
+      (2026-10-09)
+  - [X] 10.4 Change `_spawn()` to inherit stderr (drop
     `stderr=asyncio.subprocess.PIPE`, `connection_script.py:206`).
     Confirm nothing reads `proc.stderr` (grep). Full unit suite
     green. [verify: auto-test]
-  - [ ] 10.5 Add an integration test in
+    → grep: no reader of `proc.stderr`; unit suite 288 passed,
+      1 xfailed [live] (2026-10-09)
+  - [X] 10.5 Add an integration test in
     `tests/integration/test_pre_connect.py`: a real bash
     long-running script with `trap 'echo done > "$MARKER"; exit 0'
     TERM`, emits `[MCP] READY_TO_CONNECT`, blocks with
@@ -665,9 +675,32 @@ marked "amendment".
     `'"<tmpdir with space>/s.sh"'`; it starts and emits READY
     (real POSIX spawn of a quoted path, PRD success metric 6).
     [verify: auto-test]
-  - [ ] 10.6 Run the full suite (unit + integration + existing
+    → 3 passed in 1.7s, no orphaned processes; first run hung on
+      `proc.wait()` after SIGKILL (a child held stdout open, Python
+      3.12 waits for pipes) — fixed in 10.3 by polling `returncode`
+      [live] (2026-10-09)
+  - [~] 10.6 Run the full suite (unit + integration + existing
     E2E per Notes). Zero failures; the only changed existing
     assertion is the one from 10.1. [verify: auto-test]
+    → unit 288 passed, 1 xfailed; integration 18 passed, 9 skipped,
+      24 errors — all errors at fixture setup: `helm install
+      bitnami/postgresql` → "repo bitnami not found" (environment,
+      not code); E2E not run. Unit and integration must run
+      separately (duplicate test basenames) (2026-10-09)
+  - [X] 10.7 Exit detection with a child holding stdout (found in
+    10.5): `_watch_exit()` and `wait_for_exit()` await
+    `proc.wait()`, which on Python 3.12+ returns only after all
+    pipes close, so a long-running script whose child inherited
+    stdout (e.g. `aws ssm start-session`) is never seen to exit
+    (breaks FR-5). Add an integration test in
+    `tests/integration/test_pre_connect.py`: a real script starts
+    `sleep 600 &`, emits READY, then exits; the
+    `Pre-connect-script exited` event arrives within 2 s. Then make
+    both waits poll `returncode` (shared `_wait_exited`). Unit suite
+    green. [verify: auto-test]
+    → bug reproduced (no exit event within 2s); after fix the 4
+      real-process tests pass in 2.2s; unit suite 288 passed,
+      1 xfailed; tech-design updated [live] (2026-10-09)
 
 - [ ] 11.0 **User Story:** As an analyst on Windows, I want the
   script placed in a kill-on-close job object so that teardown (and

@@ -336,8 +336,20 @@ run-and-exit processes that already exited are untouched.
 - **Order**: the stop signal is sent *before* the reader task is
   reaped, so the script's stdout keeps draining while its `SIGTERM`
   handler runs; the reader is reaped after the process exits.
+- **Waiting for exit**: teardown polls `proc.returncode` (every 50 ms,
+  bounded by `_TERMINATE_GRACE_S`) instead of awaiting `proc.wait()`.
+  Since Python 3.12 a `wait()` that started before the exit is woken
+  only after all pipes close (CPython `asyncio/base_subprocess.py`
+  `_call_connection_lost`), which never happens while a child of the
+  script holds its stdout — found in 10.5, where the wait hung forever
+  after `SIGKILL`. The wait after `kill()` is bounded too; if the
+  process is still there, an event names its pid. The same polling
+  (`_wait_exited`, no time limit) backs the exit watcher
+  `_watch_exit()` and `wait_for_exit()`; with `proc.wait()` a
+  long-running script whose child inherited stdout was never seen to
+  exit, which broke FR-5 on Python 3.12+ (10.7).
 - **POSIX**: emit `stop requested`; `proc.terminate()` (SIGTERM);
-  `await asyncio.wait_for(proc.wait(), _TERMINATE_GRACE_S)` with
+  wait for exit for up to `_TERMINATE_GRACE_S` with
   `_TERMINATE_GRACE_S = 5.0` (module constant, patched in tests);
   on timeout emit `force-killed after 5s`, `proc.kill()`,
   `await proc.wait()`.

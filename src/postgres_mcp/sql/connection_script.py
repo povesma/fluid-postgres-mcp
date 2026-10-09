@@ -24,6 +24,24 @@ from postgres_mcp.sql.utils import obfuscate_password
 
 logger = logging.getLogger(__name__)
 
+_TERMINATE_GRACE_S = 5.0
+
+
+async def _wait_exited(proc: asyncio.subprocess.Process, timeout: Optional[float] = None) -> bool:
+    """Wait until `proc` has exited; False on timeout (None = no limit).
+
+    Polls `returncode` instead of awaiting `proc.wait()`: since Python
+    3.12 `wait()` also waits for the pipes to close, which never happens
+    while a child of the script still holds its stdout.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = None if timeout is None else loop.time() + timeout
+    while proc.returncode is None:
+        if deadline is not None and loop.time() >= deadline:
+            return False
+        await asyncio.sleep(0.05)
+    return True
+
 
 def split_command(command: str, *, windows: Optional[bool] = None) -> list[str]:
     """Split a --pre-connect-script value into argv.
@@ -153,7 +171,10 @@ class ConnectionScriptManager:
     async def wait_for_exit(self) -> int:
         if self._proc is None:
             raise RuntimeError("No script process to wait for")
-        return await self._proc.wait()
+        proc = self._proc
+        await _wait_exited(proc)
+        assert proc.returncode is not None
+        return proc.returncode
 
     async def stop(self) -> None:
         await self._teardown()
@@ -253,10 +274,11 @@ class ConnectionScriptManager:
             self._proc = None
             raise _SpawnError(f"invalid pre-connect-script command: {exc}") from exc
         try:
+            # stderr is inherited: nothing reads it, and an unread pipe
+            # blocks a script that writes more than one buffer.
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
             )
         except (FileNotFoundError, PermissionError, OSError) as exc:
             self._proc = None
@@ -360,7 +382,7 @@ class ConnectionScriptManager:
 
     async def _watch_exit(self, proc: asyncio.subprocess.Process) -> None:
         try:
-            await proc.wait()
+            await _wait_exited(proc)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -377,18 +399,29 @@ class ConnectionScriptManager:
                 await asyncio.wait_for(self._exit_emitter_task, timeout=0.1)
             except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
                 pass
-        await self._reap_reader()
         proc = self._proc
         if proc is not None and proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await proc.wait()
-            except Exception:
-                pass
+            # Signal before reaping the reader so stdout keeps draining
+            # while the script's SIGTERM handler runs.
+            await self._stop_process(proc)
+        await self._reap_reader()
         self._proc = None
+
+    async def _stop_process(self, proc: asyncio.subprocess.Process) -> None:
+        self._emit("Pre-connect-script stop requested (SIGTERM)")
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return
+        if await _wait_exited(proc, _TERMINATE_GRACE_S):
+            return
+        self._emit(f"Pre-connect-script force-killed after {_TERMINATE_GRACE_S:g}s grace")
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        if not await _wait_exited(proc, _TERMINATE_GRACE_S):
+            self._emit(f"Pre-connect-script still running {_TERMINATE_GRACE_S:g}s after kill (pid={proc.pid})")
 
     async def _reap_reader(self) -> None:
         if self._reader_task is not None and not self._reader_task.done():

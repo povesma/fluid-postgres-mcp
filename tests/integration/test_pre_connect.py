@@ -130,3 +130,137 @@ class TestPreConnectHookIntegration:
         assert result[0].cells["ok"] == 1
 
         await pool.close()
+
+
+def _write_script(path: str, body: str) -> None:
+    with open(path, "w") as f:
+        f.write("#!/bin/bash\n" + body)
+    os.chmod(path, stat.S_IRWXU)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.asyncio
+class TestRealScriptTeardown:
+    """Real processes, no database: ConnectionScriptManager teardown on POSIX."""
+
+    async def test_sigterm_handler_runs_on_stop(self, tmp_path):
+        from postgres_mcp.sql.connection_script import ConnectionScriptManager
+
+        marker = tmp_path / "terminated"
+        pid_file = tmp_path / "pid"
+        child_pid_file = tmp_path / "child_pid"
+        script = tmp_path / "s.sh"
+        _write_script(
+            str(script),
+            f"trap 'echo done > \"{marker}\"; exit 0' TERM\n"
+            f'echo $$ > "{pid_file}"\n'
+            'echo "[MCP] READY_TO_CONNECT"\n'
+            "sleep 600 &\n"
+            f'echo $! > "{child_pid_file}"\n'
+            "wait $!\n",
+        )
+        events: list[str] = []
+        mgr = ConnectionScriptManager(script=str(script), hook_timeout=5.0, on_event=events.append)
+        try:
+            assert (await mgr.ensure_ready()).success is True
+            await mgr.stop()
+
+            assert marker.read_text().strip() == "done"
+            assert not _pid_alive(int(pid_file.read_text()))
+            assert not any("force-killed" in e for e in events)
+        finally:
+            if child_pid_file.exists():
+                child_pid = int(child_pid_file.read_text())
+                if _pid_alive(child_pid):
+                    os.kill(child_pid, 9)
+
+    async def test_script_ignoring_sigterm_is_killed_after_grace(self, tmp_path, monkeypatch):
+        import time
+
+        from postgres_mcp.sql import connection_script
+        from postgres_mcp.sql.connection_script import ConnectionScriptManager
+
+        monkeypatch.setattr(connection_script, "_TERMINATE_GRACE_S", 0.5)
+        pid_file = tmp_path / "pid"
+        child_pid_file = tmp_path / "child_pid"
+        script = tmp_path / "s.sh"
+        _write_script(
+            str(script),
+            "trap '' TERM\n"
+            f'echo $$ > "{pid_file}"\n'
+            'echo "[MCP] READY_TO_CONNECT"\n'
+            "sleep 600 &\n"
+            f'echo $! > "{child_pid_file}"\n'
+            "wait $!\n",
+        )
+        mgr = ConnectionScriptManager(script=str(script), hook_timeout=5.0)
+        try:
+            assert (await mgr.ensure_ready()).success is True
+            started = time.monotonic()
+            await mgr.stop()
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 0.5 + 1.0
+            assert not _pid_alive(int(pid_file.read_text()))
+        finally:
+            if child_pid_file.exists():
+                child_pid = int(child_pid_file.read_text())
+                if _pid_alive(child_pid):
+                    os.kill(child_pid, 9)
+
+    async def test_exit_detected_while_child_holds_stdout(self, tmp_path):
+        import asyncio
+
+        from postgres_mcp.sql.connection_script import ConnectionScriptManager
+
+        child_pid_file = tmp_path / "child_pid"
+        script = tmp_path / "s.sh"
+        _write_script(
+            str(script),
+            "sleep 600 &\n"
+            f'echo $! > "{child_pid_file}"\n'
+            'echo "[MCP] READY_TO_CONNECT"\n'
+            "sleep 0.3\n"
+            "exit 3\n",
+        )
+        events: list[str] = []
+        mgr = ConnectionScriptManager(script=str(script), hook_timeout=5.0, on_event=events.append)
+        try:
+            assert (await mgr.ensure_ready()).success is True
+
+            async def _exited_event() -> None:
+                while not any("Pre-connect-script exited" in e for e in events):
+                    await asyncio.sleep(0.05)
+
+            await asyncio.wait_for(_exited_event(), timeout=2.0)
+            assert any("exited (code=3)" in e for e in events)
+        finally:
+            await mgr.stop()
+            if child_pid_file.exists():
+                child_pid = int(child_pid_file.read_text())
+                if _pid_alive(child_pid):
+                    os.kill(child_pid, 9)
+
+    async def test_quoted_path_with_space_starts(self, tmp_path):
+        from postgres_mcp.sql.connection_script import ConnectionScriptManager
+        from postgres_mcp.sql.connection_script import ScriptMode
+
+        script_dir = tmp_path / "dir with space"
+        script_dir.mkdir()
+        marker = tmp_path / "ran"
+        script = script_dir / "s.sh"
+        _write_script(str(script), f'echo "$1" > "{marker}"\nexit 0\n')
+
+        mgr = ConnectionScriptManager(script=f'"{script}" mydb', hook_timeout=5.0)
+        outcome = await mgr.ensure_ready()
+
+        assert outcome.success is True
+        assert outcome.mode is ScriptMode.RUN_AND_EXIT
+        assert marker.read_text().strip() == "mydb"

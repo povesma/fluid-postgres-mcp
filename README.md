@@ -416,6 +416,12 @@ Working examples — copy and adapt:
   both work; backgrounded `sleep & wait $!` with a `trap` is
   unreliable on macOS (the parent's `proc.wait()` does not
   observe SIGCHLD through it).
+- **Stopping the script (macOS / Linux).** When the MCP stops a
+  running script (ready timeout, restart, shutdown) it sends
+  `SIGTERM`, waits up to 5 seconds, then sends `SIGKILL`. Stop your
+  tunnel's child processes in a `SIGTERM` handler; the MCP signals
+  only the process it started, not children you placed in their own
+  session or process group.
 - **macOS `sleep` does not accept `infinity`.** Use a large integer
   (`exec sleep 2147483647`).
 - **Failure surface.** Exit-before-READY → mode is run-and-exit and

@@ -31,6 +31,7 @@ class _FakeStdout:
     def __init__(self) -> None:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._closed = False
+        self.on_cancel = None
 
     def feed(self, line: str) -> None:
         if not line.endswith("\n"):
@@ -46,7 +47,12 @@ class _FakeStdout:
         return self
 
     async def __anext__(self) -> bytes:
-        item = await self._queue.get()
+        try:
+            item = await self._queue.get()
+        except asyncio.CancelledError:
+            if self.on_cancel is not None:
+                self.on_cancel()
+            raise
         if item is None:
             raise StopAsyncIteration
         return item
@@ -72,6 +78,10 @@ class FakeProcess:
         self._exit_event = asyncio.Event()
         self.killed = False
         self.terminated = False
+        self.ignore_terminate = False
+        # Order of teardown-relevant calls: "terminate", "kill", "reader-cancelled".
+        self.calls: List[str] = []
+        self.stdout.on_cancel = lambda: self.calls.append("reader-cancelled")
 
     # -- driven by tests --------------------------------------------------
 
@@ -93,12 +103,14 @@ class FakeProcess:
 
     def kill(self) -> None:
         self.killed = True
+        self.calls.append("kill")
         if self.returncode is None:
             self.set_exit_code(-9)
 
     def terminate(self) -> None:
         self.terminated = True
-        if self.returncode is None:
+        self.calls.append("terminate")
+        if self.returncode is None and not self.ignore_terminate:
             self.set_exit_code(-15)
 
     async def communicate(self) -> tuple:
@@ -351,7 +363,7 @@ class TestHookTimeout:
         assert outcome.success is False
         assert outcome.error is not None and "timeout" in outcome.error.lower()
         assert mgr.alive is False
-        assert captured and captured[0].killed is True
+        assert captured and captured[0].terminated is True
 
 
 # ---------------------------------------------------------------------------
@@ -972,3 +984,71 @@ class TestEventCatalog:
         joined = "\n".join(events)
         assert "Connection lost" in joined
         assert "restart requested" in joined
+
+
+# ---------------------------------------------------------------------------
+# Graceful teardown (POSIX): SIGTERM, grace period, then kill
+# ---------------------------------------------------------------------------
+
+
+class TestGracefulTeardown:
+    async def _start_long_running(self, fake_exec, factory, ignore_terminate=False):
+        captured: List[FakeProcess] = []
+
+        def _on_spawn(fp: FakeProcess) -> None:
+            fp.ignore_terminate = ignore_terminate
+            fp.feed_line("[MCP] READY_TO_CONNECT")
+            captured.append(fp)
+
+        factory.next = _on_spawn
+        mgr, events = _make_manager(script="/bin/cat", hook_timeout=2.0)
+        with patch("asyncio.create_subprocess_exec", fake_exec):
+            outcome = await mgr.ensure_ready()
+        assert outcome.success is True
+        return mgr, events, captured[0]
+
+    @pytest.mark.asyncio
+    async def test_script_exiting_on_terminate_is_not_killed(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        with patch("postgres_mcp.sql.connection_script._TERMINATE_GRACE_S", 0.05):
+            mgr, events, fp = await self._start_long_running(fake_exec, factory)
+            await mgr.stop()
+
+        assert fp.terminated is True
+        assert fp.killed is False
+        assert mgr.alive is False
+        assert any("stop requested (SIGTERM)" in e for e in events)
+
+    @pytest.mark.asyncio
+    async def test_script_ignoring_terminate_is_killed_after_grace(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        with patch("postgres_mcp.sql.connection_script._TERMINATE_GRACE_S", 0.05):
+            mgr, events, fp = await self._start_long_running(fake_exec, factory, ignore_terminate=True)
+            await mgr.stop()
+
+        assert fp.calls[:2] == ["terminate", "kill"]
+        assert mgr.alive is False
+        assert any("force-killed after" in e for e in events)
+
+    @pytest.mark.asyncio
+    async def test_already_exited_script_is_not_signalled(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        with patch("postgres_mcp.sql.connection_script._TERMINATE_GRACE_S", 0.05):
+            mgr, _events, fp = await self._start_long_running(fake_exec, factory)
+            fp.set_exit_code(0)
+            await asyncio.sleep(0)
+            await mgr.stop()
+
+        assert fp.terminated is False
+        assert fp.killed is False
+
+    @pytest.mark.asyncio
+    async def test_stop_signal_sent_before_reader_is_cancelled(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        with patch("postgres_mcp.sql.connection_script._TERMINATE_GRACE_S", 0.05):
+            mgr, _events, fp = await self._start_long_running(fake_exec, factory, ignore_terminate=True)
+            await mgr.stop()
+
+        assert "terminate" in fp.calls
+        if "reader-cancelled" in fp.calls:
+            assert fp.calls.index("terminate") < fp.calls.index("reader-cancelled")
