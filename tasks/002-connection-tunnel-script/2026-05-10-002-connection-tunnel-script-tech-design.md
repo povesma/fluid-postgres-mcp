@@ -3,6 +3,8 @@
 **Status**: Draft
 **PRD**: [2026-05-10-002-connection-tunnel-script-prd.md](./2026-05-10-002-connection-tunnel-script-prd.md)
 **Created**: 2026-05-10
+**Amended**: 2026-10-08 — Windows and paths with spaces (PRD user
+stories 7–10, FR-9–FR-12, NFR-6)
 
 ---
 
@@ -16,6 +18,17 @@ Lifecycle and stdout parsing are extracted into a new
 `ConnectionScriptManager` class composed by `DbConnPool`. The
 existing run-and-exit codepath is preserved verbatim and exercised by
 the existing test suite without modification.
+
+The 2026-10-08 amendment changes four things around that core:
+
+- the command string is split by a quote-aware `split_command()`
+  with one rule set for POSIX and one for Windows (FR-9);
+- `_teardown()` becomes terminate → 5 s grace → kill on POSIX (FR-10);
+- on Windows the script is placed in a job object with
+  kill-on-close, and teardown terminates the job (FR-11);
+- `server.main()` runs pool/script teardown exactly once in a
+  `finally` around the transport, so it also runs when the client
+  closes stdio and on Windows (FR-12).
 
 ## Current Architecture (RLM-verified)
 
@@ -62,6 +75,48 @@ Verified against code on 2026-05-10:
   used for URLs in URL form and connection strings in `key=value`
   form — verified via `src/postgres_mcp/sql/sql_driver.py:35-74`.
 
+Verified against code on 2026-10-08 (inputs to the amendment):
+
+- `ConnectionScriptManager._spawn()` passes `*self._script.split()`
+  to `asyncio.create_subprocess_exec` — verified via
+  `src/postgres_mcp/sql/connection_script.py:198-210`. Spawn errors
+  (`FileNotFoundError`, `PermissionError`, `OSError`) become
+  `_SpawnError` (line 208-210, class at 395).
+- `_teardown()` is the single kill point: drains the exit emitter,
+  reaps reader/watcher tasks, then `proc.kill()` + `proc.wait()` if
+  `returncode is None`; no-op when `_proc` is `None` — verified via
+  `connection_script.py:318-338`. Callers: ready timeout (line 238),
+  `stop()` (line 110-111).
+- `DbConnPool.close()` cancels the exit watcher, awaits
+  `_script_mgr.stop()`, then closes the pool; a second call is a
+  no-op — verified via `src/postgres_mcp/sql/sql_driver.py:249-262`.
+- The only shutdown route is `shutdown()` → `db_connection.close()`,
+  wired via `loop.add_signal_handler` for `SIGTERM`/`SIGINT`. On
+  Windows that raises `NotImplementedError`, which is caught and
+  logged. The transport `await` (`run_stdio_async` etc.) has no
+  `finally` — verified via `src/postgres_mcp/server.py:747-768,
+  771-795`. Resolves PRD current-state bullet on the exit path.
+- The option is `ReconnectConfig.pre_connect_script: Optional[str]`,
+  read from `--pre-connect-script` or `PGMCP_PRE_CONNECT_SCRIPT`
+  (empty string → `None`) — verified via
+  `src/postgres_mcp/config.py:14, 43` and `server.py:700`.
+- Python documents: `Process.terminate()` sends `SIGTERM` on POSIX
+  and calls `TerminateProcess()` on Windows; `kill()` sends
+  `SIGKILL` on POSIX and is an alias for `terminate()` on Windows;
+  `create_subprocess_exec(**kwds)` forwards extra keywords to
+  `Popen` — verified via Context7, Python 3.10
+  `asyncio-subprocess.html` / `subprocess.html`, 2026-10-08.
+- `tests/unit/sql/test_connection_script.py:99-102`:
+  `FakeProcess.terminate()` sets the exit code immediately;
+  `:320-333` asserts `killed is True` after a ready timeout — this
+  assertion changes under FR-10 (allowed by the PRD constraint).
+- PRD assumption "launcher children survive `TerminateProcess`" was
+  **not resolved**: the Windows test machine has no `uv` and no
+  Python (2026-10-08, `uv --version` / `python --version` over SSH:
+  "not recognized" / "Python was not found"). The design does not
+  depend on the answer — it kills the job in every case — so the
+  check moves to the Windows verification in the task list.
+
 ## Past Decisions (Claude-Mem)
 
 - claude-mem #13055 (2026-05-09) — E2E SSM disruption suite was
@@ -100,7 +155,7 @@ component:
 
 | Layer | What lives here |
 |---|---|
-| `server.py` | Unchanged. Existing argparse for `--pre-connect-script` and `--hook-timeout` is reused. |
+| `server.py` | Existing argparse for `--pre-connect-script` and `--hook-timeout` is reused. Amendment: validates the command with `split_command()` at startup; runs teardown once in a `finally` around the transport. |
 | `DbConnPool` | Owns connection-pool lifecycle. Delegates "is the tunnel up, what URL do I use" to `ConnectionScriptManager`. |
 | `ConnectionScriptManager` | Owns script subprocess lifecycle, stdout parsing, mode detection, URL override, ready signal. |
 | `EventStore` (unchanged) | Receives all script + connection events via the existing `on_event` callback wired in `server.py`. |
@@ -233,6 +288,189 @@ class ConnectionScriptManager:
 - `close()`: calls `await self._script_mgr.stop()` so the script
   process is reaped on MCP shutdown.
 
+#### `split_command()` (new, amendment — FR-9)
+
+**Location**: `src/postgres_mcp/sql/connection_script.py`, module
+level.
+
+```
+def split_command(command: str, *, windows: Optional[bool] = None) -> list[str]:
+    """Split a --pre-connect-script value into argv.
+    windows=None → use os.name == "nt". Raises ValueError on
+    unbalanced quotes or an empty result; the message never contains
+    the command value."""
+```
+
+- **POSIX rules**: `shlex.split(command)` (POSIX mode, comments
+  off — the `shlex.split` default). `ValueError` from shlex
+  ("No closing quotation") is re-raised with a fixed message.
+- **Windows rules** (pure Python, ~20 lines, testable on any OS):
+  - space and tab outside double quotes separate arguments (the
+    same separator set as the Windows C runtime);
+  - `"` toggles quoting and is not copied into the argument;
+  - an argument exists once any character *or* a quote was seen, so
+    `""` yields one empty argument;
+  - backslash is always a literal character (`"C:\dir\"` →
+    `C:\dir\`); `'` is a literal character;
+  - unbalanced `"` → `ValueError`.
+  A literal `"` inside an argument cannot be expressed; Windows paths
+  cannot contain `"`, so nothing a user needs is lost.
+- **Round trip on Windows**: the argv list goes to `Popen`, which
+  rebuilds the command line with `subprocess.list2cmdline`; that
+  quotes arguments containing spaces and escapes backslashes before
+  quotes, so the child sees the intended argv.
+- **Compatibility**: a value with none of `'`, `"`, `\` whose
+  separators are ASCII space/tab (POSIX also CR/LF) gives the same
+  list as `str.split()` under both rule sets. On Windows, unquoted
+  values with backslashes also match. Other whitespace (`\x0b`,
+  `\x0c`, `\xa0`, …) is no longer a separator — `str.split()` split
+  on it, `shlex` does not (checked 2026-10-09:
+  `shlex.split('a\x0cb') == ['a\x0cb']`). Noted in the CHANGELOG
+  together with the quote/backslash change.
+
+#### Teardown (modified `_teardown`, amendment — FR-10, FR-11)
+
+Applies only when `_proc is not None and _proc.returncode is None`;
+run-and-exit processes that already exited are untouched.
+
+- **Order**: the stop signal is sent *before* the reader task is
+  reaped, so the script's stdout keeps draining while its `SIGTERM`
+  handler runs; the reader is reaped after the process exits.
+- **POSIX**: emit `stop requested`; `proc.terminate()` (SIGTERM);
+  `await asyncio.wait_for(proc.wait(), _TERMINATE_GRACE_S)` with
+  `_TERMINATE_GRACE_S = 5.0` (module constant, patched in tests);
+  on timeout emit `force-killed after 5s`, `proc.kill()`,
+  `await proc.wait()`.
+- **Windows**: if a job is attached, `job.terminate()`
+  (`TerminateJobObject`) ends the whole tree at once; emit
+  `process tree terminated`. If no job is attached (attach failed),
+  `proc.kill()` as today. Then `await proc.wait()` bounded by
+  `_TERMINATE_GRACE_S`. No graceful step on Windows (PRD story 9).
+- **Job lifetime depends on mode** (closing a kill-on-close job ends
+  every process still in it):
+  - **RUN_AND_EXIT** (script exited before READY): call
+    `job.release()` — clears the kill-on-close limit, then closes
+    the handle — so background processes the script left running on
+    purpose (e.g. a detached tunnel) survive, exactly as on POSIX.
+  - **LONG_RUNNING** script exited on its own: `job.close()` with
+    kill-on-close still set, which ends orphaned descendants (a
+    leftover tunnel would otherwise hold the port the restarted
+    script needs).
+  - **Teardown**: `job.terminate()` then `job.close()`.
+  Every path closes the handle, so handles do not leak across
+  restarts.
+- **stderr**: the script's stderr is inherited by the MCP process
+  instead of `PIPE`. Today `stderr=PIPE` is never read
+  (`connection_script.py:206`), so a script writing more than one
+  pipe buffer to stderr blocks — which now also matters during the
+  grace window. Inherited stderr lands in the agent's MCP log, where
+  the script's diagnostics are useful.
+
+#### `WindowsJob` (new, amendment — FR-11)
+
+**Location**: `src/postgres_mcp/sql/win_job.py` (imported only when
+`os.name == "nt"`).
+
+```
+class WindowsJob:
+    @classmethod
+    def for_pid(cls, pid: int) -> "WindowsJob": ...  # raises OSError
+    def terminate(self, exit_code: int = 1) -> None: ...  # TerminateJobObject
+    def release(self) -> None: ...  # clear limit flags, then close
+    def close(self) -> None: ...    # CloseHandle (kill-on-close applies)
+```
+
+Win32 constants and the `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`
+layout are confirmed against Microsoft Learn during implementation
+and pinned by `test_win_job.py` on Windows; they are not restated
+here.
+
+- `for_pid`: `CreateJobObjectW(NULL, NULL)`;
+  `SetInformationJobObject(JobObjectExtendedLimitInformation,
+  LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)`;
+  `OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, pid)`;
+  `AssignProcessToJobObject`; close the process handle. Any failing
+  call → close what was opened, raise `OSError` with the Win32 error.
+- Uses `ctypes.windll.kernel32` with explicit `argtypes`/`restype`
+  and `use_last_error=True`; no third-party dependency.
+- Kill-on-close means that if the MCP process itself is
+  force-killed or crashes, Windows closes the job handle and ends
+  the script tree — covering the case FR-12's `finally` cannot.
+- Nested jobs are supported from Windows 8 / Server 2012 ("A process
+  can be associated with more than one job starting in Windows 8" —
+  Microsoft Learn, `AssignProcessToJobObject`), so attaching works
+  even when the MCP itself runs inside the agent's job. Assignment
+  still fails if an enclosing job has UI limits or is terminating;
+  that is handled by the failure path below.
+- **PID reuse**: not a risk. `Popen` keeps an open handle to the
+  process, and Windows does not reuse a PID while any handle to the
+  process is open.
+- **Race**: children the script starts between `CreateProcess` and
+  `AssignProcessToJobObject` are not in the job. `CreateProcess`
+  runs inside `_WindowsSubprocessTransport(...)`, after which the
+  loop awaits pipe setup before `create_subprocess_exec` returns —
+  verified via CPython `asyncio/windows_events.py:385-402` (3.9).
+  The window therefore spans a few event-loop iterations, not a
+  fixed sub-millisecond interval; under load it is longer. A
+  launcher (`uv run …`) must resolve and start Python before its
+  child exists, which normally takes far longer. Accepted; the
+  Windows port-free check is the safety net. `CREATE_SUSPENDED`
+  would close the window but `Popen` does not expose the thread
+  handle needed to resume, so it is rejected.
+- Called from `_spawn()` right after `create_subprocess_exec`, on
+  Windows only. If the script has already exited
+  (`proc.returncode is not None`), attaching is skipped silently.
+  `OSError` → warning event `could not attach job object (…) —
+  child processes may survive teardown (enclosing job restrictions
+  or access denied)`, script keeps running, teardown falls back to
+  `proc.kill()`.
+
+#### `server.py` exit path (modified, amendment — FR-9, FR-12)
+
+- **Startup validation**: in `main()`, between `parse_config(args)`
+  and the `DbConnPool(...)` construction (`server.py:711-717`), if
+  `pre_connect_script` is set, call `split_command()`. On
+  `ValueError`: `parser.error("invalid --pre-connect-script /
+  PGMCP_PRE_CONNECT_SCRIPT: <reason>")` — argparse prints usage and
+  exits with status 2 (its usage-error convention); the value is not
+  echoed. Validating the resolved config (not an argparse `type=`)
+  covers the env-var form. Behaviour change: a whitespace-only value
+  now exits 2 at startup instead of failing at spawn. `_spawn()`
+  still calls `split_command()` and maps `ValueError` to
+  `_SpawnError`, as a second line of defence for code paths that
+  bypass `main()`.
+- **Single teardown owner**: `main()` is the only place that tears
+  down. The signal handler no longer calls `close()`; it records the
+  signal and cancels the main task. The transport `await` (all three
+  transports) is wrapped:
+  ```
+  try:
+      await <transport>
+  except asyncio.CancelledError:
+      if received_signal is None: raise   # foreign cancellation
+  finally:
+      await db_connection.close()   # idempotent; second call is a no-op
+  exit with 128 + signal if a signal was received
+  ```
+  `shutdown_in_progress` and the `128 + sig` exit code are kept;
+  `sys.exit` no longer runs inside a task. The `finally` covers stdio
+  EOF, transport errors, signals, `KeyboardInterrupt` (cancellation
+  of `main` by `asyncio.run`), and Windows, where no signal handler
+  exists.
+- **Second cancellation during teardown** (e.g. a second Ctrl+C):
+  teardown is interrupted. On Windows the job's kill-on-close still
+  ends the script tree when the MCP exits; on POSIX the script may be
+  left running. Accepted and documented; teardown is bounded by the
+  5 s grace in the normal case.
+- **HTTP transports**: uvicorn installs its own `SIGINT`/`SIGTERM`
+  handlers while serving, shuts down gracefully, returns from
+  `serve()`, and may re-raise the captured signal afterwards. The
+  `finally` runs teardown when `serve()` returns; a re-raised signal
+  reaching our handler then cancels a `main` that is already
+  finishing, and `close()` is a no-op the second time. The exact
+  uvicorn re-raise behaviour for the pinned version is checked in
+  implementation and pinned by an e2e test (below).
+
 #### `EventStore` (unchanged)
 
 Per user's choice, all script lifecycle events flow through the
@@ -288,11 +526,20 @@ strings, suitable for grep / human review:
 - `Pre-connect-script exited (code=N)` — emitted on process exit in
   any mode
 - `Pre-connect-script restart requested`
+- `Pre-connect-script stop requested (SIGTERM)` — POSIX teardown start
+- `Pre-connect-script force-killed after Ns grace` — POSIX, grace expired
+- `Pre-connect-script process tree terminated` — Windows, job terminated
+- `Pre-connect-script could not attach job object (<win32 error>) — child processes may survive teardown`
 
 ### API Design
 
 No MCP tool surface changes. No CLI flag additions. No env var
 additions. Exclusively internal API.
+
+Amendment: the *meaning* of the existing `--pre-connect-script` /
+`PGMCP_PRE_CONNECT_SCRIPT` string changes — it is now split with
+quote rules (FR-9). New exit status 2 for an unbalanced-quote value.
+Both are documented in README, `--help`, and CHANGELOG.
 
 ### Integration Points
 
@@ -325,6 +572,15 @@ Following the existing pattern in `DbConnPool`:
 - `hook_timeout` enforcement: every wait inside `ensure_ready()` is
   bounded by `asyncio.wait_for(..., timeout=hook_timeout)`. There is
   no path that blocks indefinitely (NFR-2).
+- Teardown wait (amendment) is bounded by `_TERMINATE_GRACE_S` plus
+  the final `kill()`/job terminate; a ready timeout therefore ends at
+  most `hook_timeout + _TERMINATE_GRACE_S` + kill time after the wait
+  began.
+- Job-object failures never stop the script from running; they
+  degrade to `proc.kill()` with a warning event.
+- The `finally` in `main()` swallows and logs exceptions from
+  `close()` (as `shutdown()` does today) so it never masks the
+  original transport exception.
 
 ### Testing Strategy
 
@@ -387,6 +643,59 @@ re-spawns and reconnects.
     `DB_URL` (simulated by re-fetching the SSM Parameter Store
     value) → next reconnect uses new URL
 
+#### Amendment tests (2026-10-08)
+
+- **Unit, `split_command`** (new `tests/unit/sql/test_split_command.py`):
+  table-driven, `windows=False` and `windows=True` explicitly so both
+  rule sets run on macOS/Linux: compatibility rows (values with no
+  `'`, `"`, `\` equal `str.split()`), POSIX quoted path with space,
+  Windows quoted path with space, Windows unquoted backslashes,
+  `""` → empty argument, `"C:\dir\"` → `C:\dir\`, unbalanced quotes
+  → `ValueError` whose message does not contain the value, empty /
+  whitespace-only → `ValueError`, `\x0c` / `\xa0` are not separators
+  (pins the documented change).
+- **Unit, teardown** (`test_connection_script.py`): `FakeProcess`
+  gains an `ignore_terminate` option. Cases: exits on terminate →
+  `terminated` and not `killed`; ignores terminate → `killed` after
+  patched grace; already exited → neither called; Windows branch
+  with a fake job → `job.terminate()` called, `proc.kill()` not;
+  attach failure → warning event and `proc.kill()` fallback;
+  RUN_AND_EXIT with a fake job → `job.release()` called, not
+  `terminate()`/`close()`; LONG_RUNNING self-exit → `job.close()`;
+  script already exited at attach time → no attach, no warning;
+  stop signal sent before the reader is reaped. The existing timeout
+  test's `killed is True` becomes `terminated is True`.
+- **Unit, exit path** (`tests/unit/test_transport.py`): transport
+  returns normally → `close()` awaited once; transport raises →
+  `close()` awaited once and the original exception propagates;
+  signal → main cancelled, `close()` awaited once, exit code
+  `128 + sig`; foreign cancellation → re-raised after `close()`.
+- **Unit, startup validation** (`tests/unit/test_config.py` or
+  `test_transport.py`, whichever already drives `main()`): flag and
+  env-var forms with unbalanced quotes → exit 2, stderr names the
+  option, not the value.
+- **Integration, POSIX graceful stop** (`test_pre_connect.py`): a
+  real long-running script whose `SIGTERM` trap writes a marker file;
+  the script blocks with `sleep N & wait $!` (a foreground `sleep`
+  would delay the trap until it ends); after `DbConnPool.close()` the
+  marker exists and the PID is gone (`os.kill(pid, 0)` raises).
+- **E2E, exit path** (`test_server_lifecycle.py`): start the MCP over
+  stdio with a long-running script that writes its PID; close stdin;
+  assert the PID is gone within `_TERMINATE_GRACE_S` + 2 s. Second
+  case: same with `--transport streamable-http`, stopped with
+  `SIGTERM`.
+- **Windows unit** (`tests/unit/sql/test_win_job.py`,
+  `skipif os.name != "nt"`): `WindowsJob` kills a child and a
+  grandchild (`python -c` spawning `python -c "sleep"`).
+- **Windows manual** (on the Windows test machine over SSH; needs
+  Python and `uv` installed there first): quoted path with a space
+  under `C:\Users\…` starts; launcher-started script whose child
+  binds a port — after teardown the port is free and a second start
+  succeeds; closing the client leaves no process from the tree; a
+  run-and-exit script that starts a detached background process and
+  exits 0 leaves that process running; the PRD's "uv children
+  survive `TerminateProcess`" question is answered as a side result.
+
 #### Backwards-compatibility regression
 
 - All 22 E2E tests in `tests/e2e/test_ssm_disruption.py` and
@@ -411,6 +720,12 @@ re-spawns and reconnects.
 | NFR-3: bounded stdout memory | `auto-test` | unit | flood-stdout-with-1MB-of-non-protocol-output test, assert manager memory delta < threshold |
 | NFR-4: credential safety | `auto-test` | unit | event-content tests assert no password substring in any emitted event message after a `DB_URL` line carrying a password |
 | NFR-5: thorough coverage | `code-only` | review | this entire test plan applied |
+| FR-9: quote-aware splitting | `auto-test` | unit | `test_split_command.py` passes for both rule sets; startup-validation tests (flag + env) exit 2 without echoing the value |
+| FR-9: Windows spawn of quoted path | `manual-run-claude` | Windows | SSH session log: script under a path with a space starts and emits READY |
+| FR-10: POSIX graceful teardown | `auto-test` | unit + integration | teardown unit cases pass; integration marker file written by the `SIGTERM` trap |
+| FR-11: Windows tree teardown | `auto-test` + `manual-run-claude` | Windows | `test_win_job.py` passes on Windows; port free and second start succeeds after teardown |
+| FR-12: teardown on MCP exit | `auto-test` + `manual-run-claude` | e2e + Windows | `test_server_lifecycle.py` stdin-close case passes; Windows: no process from the tree after closing the client |
+| NFR-6: Windows verification | `manual-run-claude` | Windows | commands and output recorded in the task list |
 
 ## Trade-offs
 
@@ -443,6 +758,36 @@ re-spawns and reconnects.
   subprocess-management concerns. Untestable in isolation.
 - Rejected: user's choice was explicit — extract a manager class.
 
+### Amendment: Windows command splitting (FR-9)
+
+- **`shlex.split` (POSIX mode) on every OS** — rejected: treats `\`
+  as an escape and destroys `C:\…` paths.
+- **`shlex.split(posix=False)` + strip outer quotes** — rejected:
+  keeps quotes inside tokens (`a"b c"` → `a"b c"`) and needs ad-hoc
+  post-processing; behaviour of `""` is surprising.
+- **`CommandLineToArgvW` (via ctypes) or a port of its rules** —
+  rejected: under those rules `\"` escapes a quote, so the common
+  `"C:\dir\"` becomes `C:\dir"`; the ctypes form also only runs on
+  Windows, so the main tests could not run on macOS.
+- **Small no-escape tokenizer (chosen)**: quotes group, backslash is
+  literal; covers every Windows path; pure Python, tested on every
+  OS. Cost: no way to put a literal `"` in an argument.
+
+### Amendment: Windows tree kill (FR-11) — user decision 2026-10-08
+
+- **`taskkill /T /F /PID`** — rejected: walks parent-PID links, so
+  grandchildren whose parent already exited are missed, and it does
+  nothing when the MCP itself is force-killed.
+- **`CTRL_BREAK_EVENT` to a new process group** — rejected: the PRD
+  defines no graceful step on Windows; it needs script cooperation
+  and a shared console.
+- **Job object with kill-on-close via ctypes (chosen)**: kills the
+  whole tree including re-parented descendants, and also covers MCP
+  crash / force-kill. Cost: ~70 lines of Windows-only ctypes, an
+  attach race of a few event-loop iterations, and mode-dependent job
+  release so run-and-exit background processes survive.
+- **pywin32** — rejected: new runtime dependency for ~5 calls.
+
 ## Implementation Constraints
 
 ### From Existing Architecture (RLM)
@@ -457,10 +802,16 @@ re-spawns and reconnects.
   `EventStore`. The new `ConnectionScriptManager` accepts the same
   callable type and calls it directly, so server-side wiring is one
   callback for both. No new constructor parameters in `server.py`.
-- The script command-string is split via `shlex`-equivalent
-  `script.split()` today (whitespace-only). For consistency, the
-  manager preserves this — even though `shlex.split()` would be
-  safer for paths with spaces. Out of scope for this change.
+- The script command string is split by `split_command()` (FR-9),
+  in `_spawn()` and once at startup in `server.main()`. Values with
+  none of `'`, `"`, `\` split exactly as `str.split()` did, which
+  keeps PATH lookup and every existing test fixture unchanged.
+- Only `tests/unit/sql/test_connection_script.py` assertions that
+  `kill()` is the first or only teardown step may change (PRD
+  constraint); all other existing tests stay unmodified.
+- `win_job.py` must not be imported on POSIX (`ctypes.windll` does
+  not exist there); the import sits inside an `os.name == "nt"`
+  branch.
 
 ### From Past Experience (Claude-Mem)
 
@@ -496,10 +847,31 @@ re-spawns and reconnects.
   `create_long_running_tunnel_script()` helper alongside
   `create_tunnel_script()`. Existing helper unchanged.
 
+### Create / Modify (amendment 2026-10-08)
+
+- Create `src/postgres_mcp/sql/win_job.py` — `WindowsJob`.
+- Create `tests/unit/sql/test_split_command.py`,
+  `tests/unit/sql/test_win_job.py` (Windows-only).
+- Modify `src/postgres_mcp/sql/connection_script.py` — add
+  `split_command()`, `_TERMINATE_GRACE_S`; `_spawn()` uses
+  `split_command()` and attaches the job on Windows; `_teardown()`
+  per §Teardown.
+- Modify `src/postgres_mcp/server.py` — `--help` text for
+  `--pre-connect-script` states the quoting rules; startup
+  validation via `parser.error`; signal handler cancels `main`;
+  `try/finally` around the transport as the single teardown owner.
+- `connection_script.py` `_spawn()`: `stderr` inherited instead of
+  `PIPE`.
+- Modify `tests/unit/sql/test_connection_script.py`,
+  `tests/integration/test_pre_connect.py`,
+  `tests/e2e/test_server_lifecycle.py`, and the test file that drives
+  `main()` — per §Amendment tests.
+- Modify `README.md` (quoting rules per OS, Windows teardown
+  behaviour) and `CHANGELOG.md` (POSIX values containing `'`, `"`,
+  `\` now interpreted).
+
 ### Not Modified
 
-- `src/postgres_mcp/server.py` — no argparse, no `parse_config`,
-  no tool-registration changes.
 - `src/postgres_mcp/config.py` — `ReconnectConfig` schema unchanged.
 - `src/postgres_mcp/event_store.py` — no new categories, no new fields.
 - All existing unit tests for `_run_pre_connect_hook` (the test file
@@ -511,7 +883,8 @@ re-spawns and reconnects.
 ### External
 
 None. `asyncio.subprocess`, `asyncio.Event`, and standard library
-regex are sufficient. No new pip dependency.
+regex are sufficient. No new pip dependency. The amendment adds only
+stdlib `shlex` and `ctypes` (Windows `kernel32`).
 
 ### Internal
 
@@ -531,15 +904,20 @@ regex are sufficient. No new pip dependency.
   the scripted case where a script prints its own raw URL.
 - **Password leak in events**: `DB_URL`-related events must emit the
   parsed host/db/user but never the password. Tested in NFR-4.
-- **Subprocess injection**: `pre_connect_script` is split on
-  whitespace; a malicious config value could inject arguments. This
-  matches today's behavior; no new attack surface. Documented in
-  README, not enforced in code.
-- **Process leak on MCP crash**: `close()` reaps the script; an
-  abnormal MCP exit (signal kill -9) leaves the script orphaned. The
-  script is responsible for handling EOF on its stdout (which it will
-  see when MCP's pipe end closes). This is the script author's
-  problem, documented in README.
+- **Subprocess injection**: `pre_connect_script` is split into argv
+  and executed without a shell (`create_subprocess_exec`), on both
+  rule sets; quote handling adds no shell interpretation (no
+  variables, globbing, or pipes). Whoever sets the config already
+  chooses the program; no new attack surface.
+- **Secrets in the command value**: the unbalanced-quote error and
+  `split_command()` messages never include the value, because the
+  command line may carry credentials.
+- **Process leak on MCP crash**: on Windows the job object's
+  kill-on-close ends the script tree when the MCP process dies for
+  any reason. On POSIX, `close()` reaps the script on every normal
+  exit (FR-12); an abnormal MCP exit (kill -9) still leaves the
+  script orphaned, and the script is responsible for handling EOF on
+  its stdout. Documented in README.
 
 ## Performance Considerations
 
@@ -566,6 +944,13 @@ client, no config breaking change). To roll back:
    without a process exit the MCP times out per pre-existing
    `hook_timeout`.
 
+Amendment (2026-10-08): ships as a patch release. Rollback = revert
+the amendment commit and publish the previous behaviour as a new
+patch version (PyPI versions cannot be re-uploaded). Users who
+started quoting paths would see quotes passed literally again; the
+downstream installer keeps its version pin on the fixed release, so
+it is not affected by a later rollback release.
+
 ## References
 
 ### Code (RLM)
@@ -580,6 +965,12 @@ client, no config breaking change). To roll back:
 - `src/postgres_mcp/config.py:9-15` — `ReconnectConfig`.
 - `tests/e2e/ssm_fixtures.py:222-259` — `create_tunnel_script`
   template for the long-running sibling helper.
+- `src/postgres_mcp/sql/connection_script.py:198-215, 318-338` —
+  `_spawn()` and `_teardown()` (amendment).
+- `src/postgres_mcp/server.py:700, 747-795` — option help, signal
+  wiring, transport run, `shutdown()` (amendment).
+- `tests/unit/sql/test_connection_script.py:95-102, 318-333` —
+  `FakeProcess` and the timeout-kill test (amendment).
 
 ### History (Claude-Mem)
 
@@ -598,3 +989,8 @@ client, no config breaking change). To roll back:
    (2) integrate into `DbConnPool` with proactive watcher,
    (3) integration test parity, (4) long-running E2E (local),
    (5) long-running E2E (SSM), (6) regression suite green.
+3. Amendment 2026-10-08: run `/embo:tasks` to add user stories for
+   (a) `split_command` + startup validation + docs, (b) POSIX graceful
+   teardown, (c) `WindowsJob` + Windows teardown, (d) exit-path
+   teardown, (e) Windows verification on the test machine,
+   (f) release and reply to the downstream project.

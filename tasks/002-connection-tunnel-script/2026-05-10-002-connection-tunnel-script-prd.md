@@ -2,6 +2,8 @@
 
 **Status**: Draft
 **Created**: 2026-05-10
+**Amended**: 2026-10-08 — Windows and paths with spaces (user
+stories 7–10, FR-9–FR-12, NFR-6)
 **Author**: Claude (via dev workflow)
 
 ---
@@ -65,8 +67,69 @@ run-and-exit users are unaffected.
   verified via task 001 user story 7.0 acceptance,
   `tasks/001-mcp-initial/2026-05-08-001-mcp-initial-tasks.md:273-305`
 
+### Windows and paths with spaces (amended 2026-10-08)
+
+**Wider context**: a downstream consumer project is building a native
+Windows installer that registers fluid-postgres-mcp with a
+long-running pre-connect script. On Windows the script command
+normally contains the user's profile path, and that path often
+contains a space. The installer cannot ship until such a command
+works. Once a fixed version is released, the consumer pins that
+version in its installers. Source: hand-off note from the consumer
+project, 2026-10-08.
+
+Observed state in 0.1.3:
+
+- The script command string is split with `str.split()` before
+  being passed to `asyncio.create_subprocess_exec`. Quotes are not
+  interpreted, so a quoted path containing a space is split into
+  several arguments with literal quote characters, and the spawn
+  fails or the script is not found — verified via:
+  `src/postgres_mcp/sql/connection_script.py:203-207`, 2026-10-08
+- Teardown of a running script calls `proc.kill()` on the spawned
+  process only, then waits for it; there is no `terminate()` step
+  and no grace period — verified via:
+  `src/postgres_mcp/sql/connection_script.py:318-338`, 2026-10-08
+- On POSIX, `kill()` sends `SIGKILL`, so a script's `SIGTERM`
+  handler (used to stop its own child processes, for example an
+  SSM session) never runs — verified via: Python
+  `subprocess.Popen.kill()` documentation (POSIX: `SIGKILL`) and
+  `connection_script.py:331`, 2026-10-08
+- On Windows, `terminate()` and `kill()` are the same operation
+  (`TerminateProcess`) and act on the spawned process only —
+  verified via: Python `subprocess.Popen.kill()` documentation
+  ("On Windows, kill() is an alias for terminate()"), 2026-10-08
+- When the command starts with a launcher (for example `uv run …`),
+  the launcher's child processes may survive `TerminateProcess` and
+  keep the local tunnel port bound — [assumption, verify in
+  tech-design]
+- Teardown is not reached on the most common exit path. The only
+  route to it at shutdown is `shutdown()` → `db_connection.close()`,
+  and `shutdown()` is wired only through `SIGTERM`/`SIGINT`
+  handlers. On Windows installing those handlers raises
+  `NotImplementedError`, which is caught and logged. When the client
+  closes stdio, the transport call returns with no `finally` and
+  `shutdown()` is never called — verified via:
+  `src/postgres_mcp/server.py:748-768, 771-795`, 2026-10-08
+- The `--pre-connect-script` help text is "Script to run before
+  connecting" and does not describe quoting — verified via:
+  `src/postgres_mcp/server.py:700`, 2026-10-08
+- The repository has no `.github/` directory; nothing is tested on
+  Windows today — verified via: `ls -a` of the repository root,
+  2026-10-08
+
 ### Decisions Already Made
 
+- **Windows support level** (2026-10-08): the promise is limited to
+  the pre-connect script — command splitting and teardown. The rest
+  of the server and the test suite are not declared Windows-tested.
+- **No JSON argv option** (2026-10-08): quote-aware splitting of the
+  existing single string is enough; no second flag or env var that
+  takes a JSON array.
+- **Windows verification** (2026-10-08): Windows-only acceptance
+  criteria are verified on the maintainer's Windows test machine,
+  reachable over SSH (PowerShell), before release; the evidence is
+  recorded in the task list.
 - **Same flag**: Mode is detected from script behavior; no new flag.
 - **Backwards compatible**: Existing run-and-exit scripts (including
   the 11.x SSM E2E test fixtures) continue to work unchanged.
@@ -255,6 +318,97 @@ my analytical sessions survive credential rotation transparently.
          wait state has either a timeout or a definitive signal
          (process exit, line received).
 
+7. **As an analyst whose script path or profile path contains a
+   space** (on any OS),
+   **I want** to quote that path in `--pre-connect-script`
+   **So that** the MCP starts the script I named instead of failing
+   to find it.
+
+   **Acceptance Criteria**:
+   - [ ] Every existing command value that contains none of `'`,
+         `"` or `\` produces the same argument list as in 0.1.3, on
+         every OS. On Windows this also holds for values containing
+         `\` (see the next criteria).
+   - [ ] POSIX: `"/path with space/s.py" db` is started as the two
+         arguments `/path with space/s.py` and `db`.
+   - [ ] Windows: `uv run "C:\Users\Jane Doe\x\s.py" db` is started
+         as `uv`, `run`, `C:\Users\Jane Doe\x\s.py`, `db`.
+   - [ ] Windows: `uv run C:\Users\jane\x\s.py db` keeps every
+         backslash.
+   - [ ] Windows edge cases are pinned by tests: an empty quoted
+         argument `""`, and a quoted directory ending in a backslash
+         (`"C:\dir\"`).
+   - [ ] A command with unbalanced quotes makes the MCP exit non-zero
+         before any connect attempt, with an error that names the
+         option and does not echo the command value.
+   - [ ] The same rules apply when the command is given through the
+         option's `PGMCP_*` env var instead of the CLI flag.
+   - [ ] Unit tests cover the criteria above without spawning a
+         process.
+   - [ ] README and `--help` state the quoting rules for POSIX and
+         for Windows; the CHANGELOG notes that POSIX values containing
+         `'`, `"` or `\` are now interpreted as quotes and escapes.
+
+8. **As a script author on POSIX whose script stops its own child
+   processes in a `SIGTERM` handler,**
+   **I want** the MCP to ask the script to stop before forcing it
+   **So that** the tunnel's child processes are stopped and the
+   local port is free for the next start.
+
+   **Acceptance Criteria**:
+   - [ ] On every teardown of a still-running script (ready timeout,
+         restart, MCP exit per FR-12), the script receives `SIGTERM`
+         first and its handler runs to completion.
+   - [ ] A script that exits within the grace period is not killed.
+   - [ ] A script that is still running after the grace period is
+         killed, and an event records that it was force-killed.
+   - [ ] Teardown never blocks longer than the grace period (default
+         5 s) plus the time to kill.
+   - [ ] Run-and-exit mode is unchanged: a script that has already
+         exited is not signalled, and its exit code decides the
+         outcome as before.
+
+   Note: the MCP signals only the process it started. A script that
+   starts children in their own session or process group is
+   responsible for stopping them in its `SIGTERM` handler.
+
+9. **As an analyst on Windows whose command starts with a launcher**
+   (for example `uv run …`),
+   **I want** teardown to stop every process the script started
+   **So that** no orphaned tunnel process keeps the local port bound
+   and the next session can open the tunnel.
+
+   Windows offers no graceful stop step: the script gets no chance to
+   run cleanup code, and teardown ends the whole process tree at once.
+
+   **Acceptance Criteria**:
+   - [ ] After teardown, no process in the script's process tree
+         (the spawned process and every process it started, directly
+         or indirectly, that did not detach itself) is still running.
+   - [ ] Verified on the Windows test machine with a launcher-started
+         script (`uv run …`) whose child starts a long-lived process
+         that binds a local port: after teardown the port is free and
+         a second start of the script succeeds. Evidence recorded in
+         the task list.
+
+10. **As an analyst who closes the agent (or the agent restarts the
+    MCP),**
+    **I want** the MCP to tear down the pre-connect script when it
+    exits
+    **So that** no tunnel process is left running and the next
+    session can open the tunnel.
+
+    **Acceptance Criteria**:
+    - [ ] When the client closes the stdio connection, the MCP runs
+          script teardown (FR-10 / FR-11) before the process exits,
+          on POSIX and on Windows.
+    - [ ] When the MCP receives `SIGTERM` or `SIGINT` (POSIX), the
+          same teardown runs.
+    - [ ] Teardown runs at most once per exit, even when more than
+          one exit trigger fires.
+    - [ ] Verified on the Windows test machine: closing the client
+          leaves no process from the script's tree running.
+
 ## Requirements
 
 ### Functional Requirements
@@ -344,6 +498,60 @@ my analytical sessions survive credential rotation transparently.
      `CONNECTION` (or a new `SCRIPT` category — tech-design call).
      All records pass through `obfuscate_password()` before storage.
 
+9. **FR-9: Quote-aware command splitting**
+   - **Priority**: High (blocks the downstream Windows installer)
+   - **Rationale**: Paths with spaces are common on Windows (profile
+     directories) and possible on every OS; today no quoting works
+     around the split.
+   - **Behavior**: The command string is split into arguments with
+     the quoting rules native to the OS the MCP runs on. POSIX:
+     shell-style quoting. Windows: the standard Windows command-line
+     rules, under which backslashes in paths are literal. A command
+     containing none of `'`, `"` or `\` splits exactly as before on
+     every OS; on Windows, unquoted values with backslashes also split
+     as before. POSIX values containing those characters change by
+     design and the CHANGELOG says so. A command with unbalanced
+     quotes is a configuration error: the MCP exits non-zero before
+     connecting, naming the option without echoing the value (it may
+     carry secrets). Where the check runs and the exact tokenizer are
+     tech-design decisions.
+
+10. **FR-10: Graceful teardown with a grace period**
+    - **Priority**: High
+    - **Rationale**: Scripts that own a tunnel must get a chance to
+      stop their child processes; otherwise the port can stay bound.
+    - **Behavior**: Applies only to a script that is still running.
+      On POSIX, teardown sends `SIGTERM`, waits a grace period
+      (default 5 s), then kills the script if it is still running.
+      On Windows there is no graceful step; teardown goes straight to
+      the tree kill of FR-11 and the grace period does not apply.
+      The grace period is added on top of `hook_timeout` (a ready
+      timeout now ends at most `hook_timeout` + grace + kill time
+      after the wait started), which keeps NFR-2 bounded. Each step
+      emits an event. The grace period is not a new configuration
+      option: 5 s covers a script stopping an SSM session, and the
+      PRD's existing preference is to avoid new config (Option B).
+
+11. **FR-11: Process-tree teardown on Windows**
+    - **Priority**: High
+    - **Rationale**: On Windows, stopping the spawned process does not
+      stop the processes it started.
+    - **Behavior**: On Windows, teardown ends the spawned process and
+      every process it started, directly or indirectly. The mechanism
+      (process group, job object, or a tree-kill command as last
+      resort) is a tech-design decision.
+
+12. **FR-12: Script teardown on MCP exit**
+    - **Priority**: High
+    - **Rationale**: Today teardown at exit depends on POSIX signal
+      handlers. It never runs on Windows or when the client closes
+      stdio, which is the most common exit, so FR-10 and FR-11 would
+      not take effect there.
+    - **Behavior**: Whenever the MCP exits — transport loop ends,
+      `SIGTERM`/`SIGINT` on POSIX, or any other normal exit — it runs
+      script teardown (FR-10 / FR-11) exactly once before the process
+      ends. Applies to every transport.
+
 ### Non-Functional Requirements
 
 1. **NFR-1: Detection latency**
@@ -377,6 +585,15 @@ my analytical sessions survive credential rotation transparently.
      real SSM E2E test that proactively kills the tunnel and asserts
      <1s detection.
 
+6. **NFR-6: Windows verification**
+   - Command splitting (FR-9) is covered by unit tests that run on
+     any OS. Windows teardown (FR-11) and the Windows spawn of a
+     quoted path are verified on the maintainer's Windows test
+     machine (`<windows-test-host>`, reachable over SSH with a
+     PowerShell shell) before release, with the commands and output
+     recorded in the task list. POSIX graceful teardown (FR-10) is covered by an
+     automated test using a script with a `SIGTERM` handler.
+
 ### Technical Constraints
 
 - **Must integrate with**: `DbConnPool._run_pre_connect_hook()`,
@@ -388,7 +605,13 @@ my analytical sessions survive credential rotation transparently.
   (`self._emit(...)`), existing `obfuscate_password()` for any
   user-visible string containing connection-string fragments.
 - **Cannot change**: the `--pre-connect-script` CLI flag name, its
-  argument shape, or the run-and-exit mode's existing semantics.
+  argument shape (one command string, also settable via its
+  `PGMCP_*` env var), or the run-and-exit mode's existing semantics.
+  FR-9 changes only how that string is split; unquoted values must
+  split as before. Exception for FR-10: in
+  `tests/unit/sql/test_connection_script.py`, assertions that
+  `kill()` is the first or only teardown step may change; no other
+  assertion in that file changes.
   All E2E tests in `tests/e2e/test_ssm_disruption.py` and unit tests
   in `tests/unit/sql/test_pre_connect_hook.py` must continue to pass
   unmodified.
@@ -410,6 +633,11 @@ my analytical sessions survive credential rotation transparently.
   startup.
 - A second protocol event for "tunnel down, please wait" before the
   script exits. Script exit *is* the tunnel-down signal in v1.
+- A second way to pass the command as a JSON array (flag or env
+  var). Quote-aware splitting (FR-9) covers paths with spaces.
+- Declaring the whole server, or the test suite, supported on
+  Windows. Windows support covers the pre-connect script only.
+- A Windows CI job. Windows checks are manual (NFR-6).
 
 ## Success Metrics
 
@@ -427,6 +655,15 @@ my analytical sessions survive credential rotation transparently.
    the CRM Postgres setup uses `claude mcp add fluid-postgres-mcp`
    with no `DATABASE_URI` env var or positional argument — only
    `--pre-connect-script` and timeout/reconnect flags.
+6. **Windows path with spaces**: verified at release — the released
+   version starts a pre-connect script whose quoted path contains a
+   space, on Windows and on POSIX. The downstream project receives
+   the release version and the final quoting rules, and pins that
+   version in its installer.
+7. **No orphaned tunnel processes**: verified at release — after
+   teardown (including closing the client), 0 processes remain from
+   the script's process tree on Windows (launcher-started script),
+   and a POSIX script's `SIGTERM` handler has run.
 
 ## References
 
@@ -447,6 +684,14 @@ my analytical sessions survive credential rotation transparently.
   E2E coverage.
 - `tests/e2e/test_ssm_disruption.py` — existing 11.x suite; must
   continue to pass.
+- `src/postgres_mcp/sql/connection_script.py:198-215` — `_spawn()`,
+  where the command string is split (FR-9).
+- `src/postgres_mcp/sql/connection_script.py:318-338` — `_teardown()`,
+  the single kill point (FR-10, FR-11).
+- `src/postgres_mcp/config.py:14,43` and `src/postgres_mcp/server.py:700`
+  — the option, its env var, and the `--help` text to update.
+- `tests/unit/sql/test_connection_script.py` — existing unit tests
+  for the script lifecycle.
 
 ### From History (Claude-Mem)
 
@@ -459,6 +704,9 @@ my analytical sessions survive credential rotation transparently.
 - Task 001 user story 4.0 — pre-connect hook with PATH lookup, exit
   code semantics, no-op when unconfigured. v2 must preserve all of
   this for run-and-exit mode.
+- Hand-off from a downstream consumer project, 2026-10-08 — source
+  of user stories 7–9; asks for a reply with the release version and
+  the final quoting rules.
 
 ---
 

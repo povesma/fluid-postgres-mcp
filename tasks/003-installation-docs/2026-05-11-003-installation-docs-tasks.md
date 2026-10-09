@@ -116,3 +116,40 @@
       uvx fluid-postgres-mcp postgresql://postgres:pw@127.0.0.1:5432/postgres
       - ✓ Connected`. [live] (2026-05-11)
     [verify: manual-run-user]
+
+- [ ] 6.0 **User Story:** As an operator installing with
+  `uvx fluid-postgres-mcp`, I want a fresh install to start so that
+  the documented snippets work again after `mcp` 2.x was published
+  (hotfix 0.1.4, found 2026-10-09: published 0.1.3 fails at import
+  with `No module named 'mcp.server.fastmcp'`, because
+  `pyproject.toml:8` allows any `mcp[cli]>=1.25.0`) [6/0]
+  - [X] 6.1 Add a unit test (e.g. `tests/unit/test_dependencies.py`)
+    that reads `pyproject.toml` and asserts the `mcp` requirement
+    has an upper bound `<2`. Test fails. [verify: auto-test]
+    → red as expected: requirement read as `mcp[cli]>=1.25.0`; run
+      with `--noconftest` because conftest import fails on mcp 2.x
+      [live] (2026-10-09)
+  - [ ] 6.2 Change `pyproject.toml:8` to `"mcp[cli]>=1.25.0,<2"`;
+    reinstall `.venv` (`uv pip install -e ".[dev]"`) so it resolves
+    `mcp` 1.x; 6.1 passes and the full unit suite is green.
+    [verify: auto-test]
+    → mcp 1.30.0 resolved; unit suite 247 passed, 1 xfailed (incl.
+      pin test); entry point `--version` starts [live] (2026-10-09)
+  - [X] 6.3 Add `## [0.1.4] - <date>` to `CHANGELOG.md` (Fixed: fresh
+    installs failed at startup with `mcp` 2.x; `mcp` is now pinned
+    below 2) and bump `pyproject.toml` to `0.1.4`. Commit on `main`
+    (no AI attribution lines): first any pending docs-only changes
+    as their own commit, then the pin + test, then the bump +
+    CHANGELOG. Confirm `git diff --quiet` and
+    `git diff --staged --quiet` both succeed. [verify: code-only]
+  - [ ] 6.4 Write the hand-written GitHub Release body per the
+    README rule to a scratch file; show it and get the user's
+    explicit approval to release 0.1.4 (PyPI upload cannot be
+    undone). [verify: manual-run-user]
+  - [ ] 6.5 Precondition: approval from 6.4 recorded in this
+    session; otherwise stop. Run `scripts/release.sh --version
+    0.1.4 --release-body-file <file> --yes` (pushes and uploads),
+    then `scripts/release-check.sh 0.1.4`. [verify: manual-run-claude]
+  - [ ] 6.6 Smoke the published package from a clean cache:
+    `uvx --refresh fluid-postgres-mcp@0.1.4 --version` prints
+    `fluid-postgres-mcp 0.1.4`. [verify: manual-run-claude]

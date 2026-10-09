@@ -33,6 +33,34 @@
 - `tests/e2e/test_ssm_disruption.py` ::
   Add TestLongRunningSsm* classes (modify)
 
+Amendment 2026-10-08 (stories 9.0–14.0):
+
+- `src/postgres_mcp/sql/connection_script.py` ::
+  split_command(), _TERMINATE_GRACE_S, _spawn() and _teardown()
+  changes, Windows job attach/release (modify)
+- `src/postgres_mcp/sql/win_job.py` ::
+  WindowsJob ctypes wrapper, Windows-only (create)
+- `src/postgres_mcp/server.py` ::
+  --help text, startup validation, signal handler cancels main,
+  try/finally teardown around the transport (modify)
+- `tests/unit/sql/test_split_command.py` ::
+  Both rule sets, compatibility and error cases (create)
+- `tests/unit/sql/test_win_job.py` ::
+  WindowsJob on real processes, skipped on POSIX (create)
+- `tests/unit/sql/test_connection_script.py` ::
+  FakeProcess ignore_terminate, teardown and Windows-branch tests;
+  one assertion at :333 changes (modify)
+- `tests/unit/test_transport.py` ::
+  Exit-path and startup-validation tests (modify)
+- `tests/integration/test_pre_connect.py` ::
+  POSIX SIGTERM-trap marker test (modify)
+- `tests/e2e/test_server_lifecycle.py` ::
+  stdin-close and streamable-http SIGTERM teardown (modify)
+- `README.md`, `CHANGELOG.md`, `pyproject.toml` ::
+  Quoting rules, 0.1.5 entry, version bump (modify)
+- Downstream task folder (outside this repo) ::
+  Reply file next to the hand-off (create)
+
 ## Notes
 
 - Tests use pytest + pytest-asyncio. Run with `pytest` from repo root.
@@ -54,6 +82,13 @@
   2. `obfuscate_password()` is moved into a new
      `postgres_mcp.sql.utils` module; `sql_driver.py` re-exports
      it for backwards compatibility.
+- Amendment (9.0–14.0): Windows code is tested on macOS through a
+  fake job and `windows=True` tokenizer tests; real Windows runs
+  happen in 11.6 and 13.0, on the Windows test machine over SSH
+  (`ssh <windows-test-host>`, PowerShell — use single quotes
+  locally so `$` is not expanded by zsh).
+- Release (14.x) uploads to PyPI; never run it without the user's
+  explicit approval in the same session.
 
 ## TDD Planning Guidelines
 
@@ -503,3 +538,318 @@
       between invocations without touching Parameter Store.
       Asserts ≥2 DB_URL events across the rotation [live]
       (2026-05-10)
+
+### Amendment 2026-10-08 — Windows and paths with spaces
+
+PRD user stories 7–10, FR-9–FR-12, NFR-6; tech-design sections
+marked "amendment".
+
+- [ ] 9.0 **User Story:** As an analyst whose script or profile path
+  contains a space, I want `--pre-connect-script` to honour quotes
+  (POSIX and Windows rules) and reject malformed values at startup
+  so that the MCP starts the script I named [7/0]
+  - [ ] 9.1 Create `tests/unit/sql/test_split_command.py` with
+    table-driven tests calling `split_command(value, windows=False)`
+    and `windows=True` explicitly: compatibility rows (no `'`, `"`,
+    `\`; ASCII space/tab separators) equal `str.split()`; POSIX
+    `'"/path with space/s.py" db'` → `['/path with space/s.py',
+    'db']`; Windows `'uv run "C:\Users\Jane Doe\x\s.py" db'` →
+    `['uv','run','C:\Users\Jane Doe\x\s.py','db']`; Windows
+    unquoted `C:\Users\jane\x\s.py` keeps every backslash; Windows
+    `'a "" b'` → `['a','','b']`; Windows `'"C:\dir\" x'` →
+    `['C:\dir\','x']`; Windows `'it's'` keeps the `'`; `\x0c` and
+    `\xa0` are not separators (both rule sets). Write the
+    apostrophe case as the Python literal `"it's"` → `["it's"]`
+    (Windows only; POSIX raises). Tests fail (no function yet).
+    [verify: auto-test]
+  - [ ] 9.2 Add error-case tests to the same file: unbalanced `"`
+    (both rule sets) and unbalanced `'` (POSIX) raise `ValueError`
+    whose message does not contain the input value; empty string
+    and whitespace-only raise `ValueError`. [verify: auto-test]
+  - [ ] 9.3 Implement module-level `split_command(command, *,
+    windows=None)` in `src/postgres_mcp/sql/connection_script.py`
+    per tech-design §`split_command()`: `windows=None` →
+    `os.name == "nt"`; POSIX = `shlex.split(command)` with its
+    `ValueError` re-raised under a fixed message; Windows = small
+    no-escape tokenizer (space/tab separate, `"` toggles and is
+    dropped, `""` gives an empty argument, `\` and `'` literal).
+    9.1 and 9.2 pass. [verify: auto-test]
+  - [ ] 9.4 In `_spawn()` (`connection_script.py:198-210`) replace
+    `*self._script.split()` with `*split_command(self._script)`;
+    map `ValueError` to `_SpawnError`. Add a unit test in
+    `test_connection_script.py` that a quoted path with a space
+    reaches `create_subprocess_exec` as one argument. Full unit
+    suite green. [verify: auto-test]
+  - [ ] 9.5 Write tests for startup validation in whichever unit
+    test file already drives `main()` / `_build_parser()` (check
+    `tests/unit/test_transport.py`, `tests/unit/test_config.py`):
+    unbalanced quotes via `--pre-connect-script` and via
+    `PGMCP_PRE_CONNECT_SCRIPT` → `SystemExit` code 2; stderr names
+    `--pre-connect-script / PGMCP_PRE_CONNECT_SCRIPT` and does not
+    contain the value; whitespace-only value → exit 2.
+    [verify: auto-test]
+  - [ ] 9.6 Implement validation in `server.main()` between
+    `parse_config(args)` and `DbConnPool(...)`
+    (`server.py:711-717`): if `pre_connect_script` is set, call
+    `split_command()`; on `ValueError` call
+    `parser.error("invalid --pre-connect-script /
+    PGMCP_PRE_CONNECT_SCRIPT: <reason>")`. 9.5 passes.
+    [verify: auto-test]
+  - [ ] 9.7 Update the `--pre-connect-script` help text
+    (`server.py:700`) and the README "Pre-connect scripts" section
+    with the quoting rules per OS (POSIX shell-style quotes and
+    backslash escapes; Windows double quotes only, backslash always
+    literal, no literal `"` possible) and one quoted-path example
+    per OS. README also states the teardown behaviour (POSIX
+    SIGTERM + 5 s grace; Windows whole tree, no graceful step, also
+    on MCP crash) and the accepted risk that a second Ctrl+C during
+    teardown can leave a POSIX script running. Add a unit test
+    asserting `_build_parser().format_help()` contains the quoting
+    rule text. [verify: auto-test]
+
+- [ ] 10.0 **User Story:** As a script author on POSIX, I want
+  teardown to send `SIGTERM`, wait a 5 s grace period, then kill, so
+  that my script's cleanup handler stops its tunnel children [6/0]
+  - [ ] 10.1 Extend `FakeProcess` in `test_connection_script.py`
+    with an `ignore_terminate` option (terminate records the call
+    but does not set an exit code). Change the existing assertion
+    at `test_connection_script.py:333` from `killed is True` to
+    `terminated is True` (the only existing assertion the PRD lets
+    change). No other existing assertion changes. The changed test
+    is expected red until 10.3. [verify: code-only]
+  - [ ] 10.2 Write teardown unit tests (patch
+    `_TERMINATE_GRACE_S` to 0.05): script exits on terminate →
+    `terminated` and not `killed`, event `stop requested (SIGTERM)`;
+    `ignore_terminate` → `killed` after grace, event
+    `force-killed after …s grace`; already-exited process →
+    neither called; stop signal sent before the reader task is
+    cancelled (assert via a fake stdout that records when it is
+    closed). Tests fail. [verify: auto-test]
+  - [ ] 10.3 Implement POSIX teardown in `_teardown()`
+    (`connection_script.py:318-338`) per tech-design §Teardown:
+    add module constant `_TERMINATE_GRACE_S = 5.0`; only when
+    `returncode is None`; `terminate()` → `wait_for(proc.wait(),
+    grace)` → on timeout `kill()` + `wait()`; send the signal
+    before reaping the reader, reap after exit; emit the two new
+    events. 10.2 passes; full unit suite green. [verify: auto-test]
+  - [ ] 10.4 Change `_spawn()` to inherit stderr (drop
+    `stderr=asyncio.subprocess.PIPE`, `connection_script.py:206`).
+    Confirm nothing reads `proc.stderr` (grep). Full unit suite
+    green. [verify: auto-test]
+  - [ ] 10.5 Add an integration test in
+    `tests/integration/test_pre_connect.py`: a real bash
+    long-running script with `trap 'echo done > "$MARKER"; exit 0'
+    TERM`, emits `[MCP] READY_TO_CONNECT`, blocks with
+    `sleep 600 & wait $!`. After `ensure_ready()` then
+    `DbConnPool.close()` (or manager `stop()`): marker file exists
+    and `os.kill(pid, 0)` raises `ProcessLookupError`. Second case:
+    script that traps and ignores TERM, with `_TERMINATE_GRACE_S`
+    patched to 0.5 → killed within grace + 1 s; the test kills the
+    orphaned `sleep` in cleanup. Third case: the script lives in a
+    tmp directory whose name contains a space and is configured as
+    `'"<tmpdir with space>/s.sh"'`; it starts and emits READY
+    (real POSIX spawn of a quoted path, PRD success metric 6).
+    [verify: auto-test]
+  - [ ] 10.6 Run the full suite (unit + integration + existing
+    E2E per Notes). Zero failures; the only changed existing
+    assertion is the one from 10.1. [verify: auto-test]
+
+- [ ] 11.0 **User Story:** As an analyst on Windows, I want the
+  script placed in a kill-on-close job object so that teardown (and
+  an MCP crash) ends the whole process tree, while a run-and-exit
+  script's deliberate background process survives [6/0]
+  - [ ] 11.1 Look up on Microsoft Learn (WebFetch) and record in a
+    code comment: `CreateJobObjectW`, `SetInformationJobObject`
+    with `JobObjectExtendedLimitInformation`,
+    `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` /
+    `JOBOBJECT_BASIC_LIMIT_INFORMATION` field layout,
+    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, `OpenProcess` rights
+    `PROCESS_SET_QUOTA | PROCESS_TERMINATE`,
+    `AssignProcessToJobObject`, `TerminateJobObject`,
+    `CloseHandle`. Note each constant's value and source URL.
+    [verify: code-only]
+  - [ ] 11.2 Create `src/postgres_mcp/sql/win_job.py` with class
+    `WindowsJob`: `for_pid(pid)` (create job, set kill-on-close,
+    open process, assign, close process handle; any failure closes
+    what was opened and raises `OSError` with the Win32 error),
+    `terminate(exit_code=1)`, `release()` (clear limit flags, then
+    close), `close()`. ctypes `kernel32` with explicit
+    `argtypes`/`restype`, `use_last_error=True`. Module must not be
+    imported on POSIX. [verify: code-only]
+  - [ ] 11.3 Write unit tests in `test_connection_script.py` for
+    the Windows branch by patching two module-level seams in
+    `connection_script.py` — `_is_windows()` (returns `True`) and
+    `_make_job(pid)` (returns a fake job). Never patch `os.name`
+    (breaks pathlib/asyncio on macOS). Cases: attach called once
+    after spawn;
+    teardown → `job.terminate()` + `job.close()`, `proc.kill()`
+    not called, event `process tree terminated`; RUN_AND_EXIT
+    (exit before READY) → `job.release()`, not `terminate()`;
+    LONG_RUNNING self-exit → `job.close()`; attach raises
+    `OSError` → warning event `could not attach job object` and
+    teardown falls back to `proc.kill()`; process already exited
+    at attach time → no attach, no warning. Tests fail.
+    [verify: auto-test]
+  - [ ] 11.4 Implement the Windows branch in
+    `connection_script.py`: add the seams `_is_windows()`
+    (`os.name == "nt"`) and `_make_job(pid)` (imports `win_job`
+    inside the function, returns `WindowsJob.for_pid(pid)`); attach
+    in `_spawn()` right after `create_subprocess_exec` when
+    `_is_windows()`; mode-dependent release in the
+    run-and-exit path (`connection_script.py:246-262`) and the
+    long-running exit path; Windows teardown per tech-design
+    §Teardown (no graceful step, wait bounded by
+    `_TERMINATE_GRACE_S`). 11.3 passes; full unit suite green on
+    macOS. [verify: auto-test]
+  - [ ] 11.5 Create `tests/unit/sql/test_win_job.py`
+    (`pytest.mark.skipif(os.name != "nt")`): `WindowsJob.for_pid`
+    on a `python -c` child that starts a `python -c` grandchild
+    sleeping; `terminate()` ends both (check by PID); `release()`
+    leaves both running (then clean up); `close()` with
+    kill-on-close ends both. Skipped on macOS; full unit suite
+    still green on macOS. [verify: auto-test]
+  - [ ] 11.6 Windows setup and first Windows run (pulled forward so
+    ctypes bugs surface here, not at the end): over SSH, install
+    `uv` at user level with the official PowerShell installer and
+    `uv python install 3.12`; copy the working-tree version of
+    every git-tracked file (`git ls-files` list, copied with `scp`;
+    never `.git`, `.claude/`, `tmp/`, `.env`) plus the new files
+    from 9.0–11.0 to a directory under the user profile whose name
+    contains a space (e.g. `fpm test`); create a
+    venv with `uv`, `uv pip install -e ".[dev]"`; run
+    `pytest tests/unit/sql/test_win_job.py`. Fix 11.2 until green.
+    Record versions, the path (as `<user>` placeholder) and pass
+    counts. Commands need the user's approval as they run.
+    [verify: manual-run-claude]
+
+- [ ] 12.0 **User Story:** As an analyst who closes the agent, I want
+  `server.main()` to be the single teardown owner on every exit path
+  so that no tunnel process outlives the MCP [5/0]
+  - [ ] 12.1 Write unit tests in `tests/unit/test_transport.py`
+    with a stubbed transport and a stub `db_connection` that counts
+    `close()` calls. The signal handler is a closure inside
+    `main()` (`server.py:749-752`): capture it by patching
+    `loop.add_signal_handler` and invoke the captured callback.
+    Cases: transport returns normally → `close()` once; transport
+    raises → `close()` once and the original exception propagates;
+    signal path, parametrised over `SIGTERM` and `SIGINT` → `main`
+    cancelled, `close()` once, `pytest.raises(SystemExit)` with code
+    `128 + sig`; double trigger (signal twice; signal plus normal
+    transport return) → `close()` still once; foreign cancellation
+    (no signal) → `close()` once, `CancelledError` re-raised;
+    `close()` raising → logged, original outcome kept. Tests fail.
+    [verify: auto-test]
+  - [ ] 12.2 Implement in `server.py` per tech-design §`server.py`
+    exit path: signal handler records the signal and cancels the
+    main task (no `close()`, no `sys.exit` inside a task); reduce
+    `shutdown()` (`server.py:771-795`) to that recording role or
+    delete it (only the signal handler calls it; no test uses it);
+    keep `shutdown_in_progress` (`server.py:54`) to ignore repeat
+    signals; wrap the transport `await` (all three transports,
+    `server.py:758-768`) in `try / except CancelledError /
+    finally: await db_connection.close()`; exit with `128 + sig`
+    after the `finally` when a signal was received. 12.1 passes;
+    full unit suite green. [verify: auto-test]
+  - [ ] 12.3 Add E2E test in `tests/e2e/test_server_lifecycle.py`:
+    start the MCP with the `subprocess.Popen([sys.executable, "-m",
+    "postgres_mcp", ...], env PYTHONPATH=src)` pattern from
+    `test_server_lifecycle.py:57-63` (not `create_mcp_session`,
+    which cannot close stdin on demand), with a long-running script
+    that writes its PID to a file and emits `[MCP] DB_URL` (the
+    test PG URL) then READY; close the MCP's stdin;
+    assert the script PID is gone within `_TERMINATE_GRACE_S + 2`
+    seconds (`os.kill(pid, 0)`). [verify: e2e]
+  - [ ] 12.4 Add E2E case: same script with
+    `--transport streamable-http`; send `SIGTERM` to the MCP;
+    assert the script PID is gone and the MCP exit code is
+    `128 + 15`. Check uvicorn's signal re-raise behaviour for the
+    installed version. If the test shows a double or missed
+    teardown, return to 12.2 and fix it there. [verify: e2e]
+  - [ ] 12.5 Run the full suite (unit + integration + E2E). Zero
+    failures. [verify: auto-test]
+
+- [ ] 13.0 **User Story:** As the maintainer, I want every
+  Windows-only acceptance criterion checked on the Windows test
+  machine over SSH, with evidence recorded here, so that the Windows
+  promise is proven before release [8/0]
+  - [ ] 13.1 Confirm the Windows setup from 11.6 is still present
+    (`uv --version`, `uv run --python 3.12 python --version`).
+    Record output. [verify: manual-run-claude]
+  - [ ] 13.2 Refresh the Windows test directory from 11.6 with the
+    current versions of all files changed in 9.0–12.0 (tracked
+    files only — never `.git`, `.claude/`, `tmp/`, `.env`), then
+    `uv pip install -e ".[dev]"`. Record the file list and install
+    output. [verify: manual-run-claude]
+  - [ ] 13.3 Run on Windows: `pytest tests/unit/sql/` (including
+    `test_win_job.py`, now not skipped) and
+    `test_split_command.py`. Record the pass counts.
+    [verify: manual-run-claude]
+  - [ ] 13.4 Quoted path with a space: run the MCP with
+    `--pre-connect-script 'uv run --no-project --python 3.12
+    "<dir with space>\fixture.py"'` where the fixture emits
+    `[MCP] READY_TO_CONNECT`; confirm via debug log / `status`
+    output that the script started and READY was received.
+    [verify: manual-run-claude]
+  - [ ] 13.5 Tree teardown: a launcher-started fixture
+    (`uv run … fixture.py`) whose child starts a long-lived process
+    that binds a local port. Trigger teardown; confirm the port is
+    free (`Get-NetTCPConnection -LocalPort <p>` empty) and a second
+    start of the script succeeds. Separately, start the same
+    fixture with `uv run` directly in PowerShell and
+    `Stop-Process -Id <uv pid>` (no tree kill); record whether the
+    child survived — answers the PRD assumption.
+    [verify: manual-run-claude]
+  - [ ] 13.6 Exit path: start the MCP over stdio from a PowerShell
+    wrapper, close its stdin; confirm no process from the script
+    tree remains (`Get-CimInstance Win32_Process` filtered by the
+    recorded PIDs). [verify: manual-run-claude]
+  - [ ] 13.7 Run-and-exit: a fixture that starts a detached
+    background process and exits 0; confirm that background process
+    is still running after the MCP connected, then clean it up.
+    [verify: manual-run-claude]
+  - [ ] 13.8 Remove only the exact test directory recorded in 11.6,
+    after checking the path ends in `fpm test` and is under the
+    user profile (keep `uv` and Python for future runs). Record the
+    evidence of 11.6 and 13.1–13.7 under each subtask here, with
+    the host alias, user name and any IP addresses replaced by
+    `<windows-test-host>` / `<user>`. [verify: manual-run-claude]
+
+- [ ] 14.0 **User Story:** As the downstream installer maintainer, I
+  want a released version with documented quoting rules and a reply
+  naming it so that I can pin it in the Windows installer [5/0]
+  - [ ] 14.1 Add a `## [0.1.5] - <date>` section to `CHANGELOG.md`
+    per the README CHANGELOG authoring rule: Added (quoted paths in
+    `--pre-connect-script`, Windows tree teardown), Changed (POSIX
+    values containing `'`, `"`, `\` and non-ASCII whitespace now
+    split differently; graceful `SIGTERM` teardown; script stderr
+    inherited; teardown on client close; whitespace-only value
+    exits 2). Bump `pyproject.toml` to `0.1.5`. Then commit on
+    `main`: first the amendment code, tests and docs, then the
+    version bump + CHANGELOG (no AI attribution lines, per the
+    user's CLAUDE.md). `scripts/release.sh:128-140` refuses a dirty
+    tree and requires the bump and the `[0.1.5]` section to be
+    committed. Confirm `git status` is clean. Do not push yet — the
+    release script pushes. [verify: code-only]
+  - [ ] 14.2 Write the hand-written GitHub Release body per the
+    README rule to a scratch file. Show it to the user and get
+    explicit approval to release 0.1.5 — the script uploads to
+    PyPI, which cannot be undone. [verify: manual-run-user]
+  - [ ] 14.3 Precondition: the user's explicit approval from 14.2
+    is recorded in this session; otherwise stop. Run
+    `scripts/release.sh --version 0.1.5 --release-body-file <file>
+    --yes` — it pushes the commits and tag to origin and uploads to
+    PyPI (irreversible); then
+    `scripts/release-check.sh 0.1.5` shows tag, GitHub Release and
+    PyPI agree, and `uvx fluid-postgres-mcp@0.1.5 --version` prints
+    `0.1.5`. [verify: manual-run-claude]
+  - [ ] 14.4 On the Windows machine: `uvx fluid-postgres-mcp@0.1.5
+    --version` and repeat 13.4 against the published package.
+    [verify: manual-run-claude]
+  - [ ] 14.5 Write the reply next to the hand-off in the downstream
+    project's task folder (added to this session):
+    `2026-MM-DD-fluid-postgres-mcp-reply.md` with the release
+    version, the final quoting rules per OS (including the
+    recommended registration form), Windows teardown behaviour (no
+    graceful step; whole tree ends; also on MCP crash), and POSIX
+    teardown behaviour (SIGTERM + 5 s). The user commits it in that
+    repo. [verify: code-only]
