@@ -745,7 +745,54 @@ async def main():
             "[MCP] DB_URL <url>.",
         )
 
-    # Initialize database connection pool
+    # main() is the single teardown owner: a signal only records itself and
+    # cancels this task; the `finally` below closes the pool and stops the
+    # pre-connect script on every exit path (signal during startup, stdin
+    # closed, transport error, Ctrl+C, and Windows, where signal handlers are
+    # unavailable). Handlers are installed before the first connect, because
+    # the pre-connect script starts there.
+    received_signals: list[signal.Signals] = []
+    main_task = asyncio.current_task()
+    transport_done = False
+
+    def _on_signal(sig: signal.Signals) -> None:
+        global shutdown_in_progress
+        if shutdown_in_progress:
+            logger.warning(f"Received {sig.name} again; shutdown already in progress")
+            return
+        shutdown_in_progress = True
+        logger.info(f"Received exit signal {sig.name}")
+        received_signals.append(sig)
+        if not transport_done and main_task is not None:
+            main_task.cancel()
+
+    try:
+        loop = asyncio.get_running_loop()
+        for s in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(s, _on_signal, s)
+    except NotImplementedError:
+        logger.warning("Signal handling not supported on Windows")
+
+    try:
+        await _connect_initially(database_url)
+        await _run_transport(args)
+        transport_done = True
+    except asyncio.CancelledError:
+        transport_done = True
+        if not received_signals:
+            raise
+    finally:
+        try:
+            await db_connection.close()
+            logger.info("Closed database connections")
+        except Exception as e:
+            logger.error(f"Error closing database connections: {obfuscate_password(str(e))}")
+
+    if received_signals:
+        sys.exit(128 + received_signals[0])
+
+
+async def _connect_initially(database_url: str | None) -> None:
     try:
         pool = await db_connection.pool_connect(database_url)
         if pool is None:
@@ -760,18 +807,8 @@ async def main():
             "The MCP server will start but database operations will fail until a valid connection is established.",
         )
 
-    # Set up proper shutdown handling
-    try:
-        loop = asyncio.get_running_loop()
-        signals = (signal.SIGTERM, signal.SIGINT)
-        for s in signals:
-            loop.add_signal_handler(s, lambda s=s: asyncio.create_task(shutdown(s)))
-    except NotImplementedError:
-        # Windows doesn't support signals properly
-        logger.warning("Signal handling not supported on Windows")
-        pass
 
-    # Run the server with the selected transport (always async)
+async def _run_transport(args: argparse.Namespace) -> None:
     if args.transport == "stdio":
         await mcp.run_stdio_async()
     elif args.transport == "sse":
@@ -782,28 +819,3 @@ async def main():
         mcp.settings.host = args.streamable_http_host
         mcp.settings.port = args.streamable_http_port
         await mcp.run_streamable_http_async()
-
-
-async def shutdown(sig=None):
-    """Clean shutdown of the server."""
-    global shutdown_in_progress
-
-    if shutdown_in_progress:
-        logger.warning("Forcing immediate exit")
-        # Use sys.exit instead of os._exit to allow for proper cleanup
-        sys.exit(1)
-
-    shutdown_in_progress = True
-
-    if sig:
-        logger.info(f"Received exit signal {sig.name}")
-
-    # Close database connections
-    try:
-        await db_connection.close()
-        logger.info("Closed database connections")
-    except Exception as e:
-        logger.error(f"Error closing database connections: {e}")
-
-    # Exit with appropriate status code
-    sys.exit(128 + sig if sig is not None else 0)

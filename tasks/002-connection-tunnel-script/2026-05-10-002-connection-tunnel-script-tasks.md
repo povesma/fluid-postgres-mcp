@@ -838,8 +838,8 @@ marked "amendment".
 
 - [ ] 12.0 **User Story:** As an analyst who closes the agent, I want
   `server.main()` to be the single teardown owner on every exit path
-  so that no tunnel process outlives the MCP [5/0]
-  - [ ] 12.1 Write unit tests in `tests/unit/test_transport.py`
+  so that no tunnel process outlives the MCP [6/0]
+  - [X] 12.1 Write unit tests in `tests/unit/test_transport.py`
     with a stubbed transport and a stub `db_connection` that counts
     `close()` calls. The signal handler is a closure inside
     `main()` (`server.py:749-752`): capture it by patching
@@ -853,7 +853,11 @@ marked "amendment".
     (no signal) → `close()` once, `CancelledError` re-raised;
     `close()` raising → logged, original outcome kept. Tests fail.
     [verify: auto-test]
-  - [ ] 12.2 Implement in `server.py` per tech-design §`server.py`
+    → 8 tests; red as expected. The "signal plus normal return" case
+      became "signal during teardown" (close() fires the signal): the
+      first version fired the handler synchronously inside the
+      transport, which a real signal cannot do [live] (2026-10-09)
+  - [X] 12.2 Implement in `server.py` per tech-design §`server.py`
     exit path: signal handler records the signal and cancels the
     main task (no `close()`, no `sys.exit` inside a task); reduce
     `shutdown()` (`server.py:771-795`) to that recording role or
@@ -866,7 +870,12 @@ marked "amendment".
     script is stopped when the client disconnects; a second Ctrl+C
     during that stop can leave a POSIX script running. 12.1 passes;
     full unit suite green. [verify: auto-test]
-  - [ ] 12.3 Add E2E test in `tests/e2e/test_server_lifecycle.py`:
+    → `shutdown()` deleted; handlers installed before the initial
+      connect, which now runs inside the same try (found in 12.3);
+      a signal after the transport returned only sets the exit code;
+      12.1 passes; unit suite 311 passed, 4 skipped, 1 xfailed;
+      README and tech-design updated [live] (2026-10-09)
+  - [X] 12.3 Add E2E test in `tests/e2e/test_server_lifecycle.py`:
     start the MCP with the `subprocess.Popen([sys.executable, "-m",
     "postgres_mcp", ...], env PYTHONPATH=src)` pattern from
     `test_server_lifecycle.py:57-63` (not `create_mcp_session`,
@@ -875,14 +884,39 @@ marked "amendment".
     test PG URL) then READY; close the MCP's stdin;
     assert the script PID is gone within `_TERMINATE_GRACE_S + 2`
     seconds (`os.kill(pid, 0)`). [verify: e2e]
-  - [ ] 12.4 Add E2E case: same script with
+    → script emits no DB_URL (unreachable URL kept the MCP in the
+      initial connect for the pool's 30 s timeout, so stdin close was
+      not seen); passes; extra case "SIGTERM during the initial
+      connect" added — it first failed (no handler yet, then a leaked
+      pool kept the process alive), fixed by 12.2 and 12.6; 3 passed,
+      no orphaned processes [live] (2026-10-09)
+  - [X] 12.4 Add E2E case: same script with
     `--transport streamable-http`; send `SIGTERM` to the MCP;
     assert the script PID is gone and the MCP exit code is
     `128 + 15`. Check uvicorn's signal re-raise behaviour for the
     installed version. If the test shows a double or missed
     teardown, return to 12.2 and fix it there. [verify: e2e]
-  - [ ] 12.5 Run the full suite (unit + integration + E2E). Zero
+    → streamable-http + SIGTERM: exit code 143, script gone, single
+      teardown (uvicorn 0.54.0) [live] (2026-10-09)
+  - [~] 12.5 Run the full suite (unit + integration + E2E). Zero
     failures. [verify: auto-test]
+    → unit 311 passed, 4 skipped, 1 xfailed; new E2E 3 passed;
+      DB-backed integration and other E2E not run (helm `bitnami`
+      repo missing, SSM env) — same environment gap as 10.6
+      (2026-10-09)
+  - [X] 12.6 Close the psycopg pool when the first connect fails or is
+    cancelled (found in 12.3: `DbConnPool._create_pool()`,
+    `sql_driver.py:87-99`, closes nothing on failure, so the pool's
+    workers keep reconnecting and keep the process alive after
+    SIGTERM during the initial connect; every failed reconnect also
+    leaks a pool). Unit test: `_create_pool()` with a pool whose
+    `open()` or first query raises (and one that is cancelled) →
+    `pool.close()` awaited, error re-raised. Then
+    `test_sigterm_during_initial_connect_stops_the_script` passes.
+    [verify: auto-test]
+    → 3 unit tests (open fails, first query fails, cancelled); real
+      MCP with SIGTERM during the initial connect exits 143 in 3.4 s,
+      script gone [live] (2026-10-09)
 
 - [ ] 13.0 **User Story:** As the maintainer, I want every
   Windows-only acceptance criterion checked on the Windows test

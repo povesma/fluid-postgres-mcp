@@ -92,10 +92,19 @@ class DbConnPool:
             max_size=5,
             open=False,
         )
-        await pool.open()
-        async with pool.connection() as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT 1")
+        try:
+            await pool.open()
+            async with pool.connection() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("SELECT 1")
+        except BaseException:
+            # An unclosed pool keeps its workers reconnecting forever and
+            # keeps the process alive after shutdown.
+            try:
+                await pool.close(timeout=1.0)
+            except Exception as e:
+                logger.warning(f"Error closing failed connection pool: {obfuscate_password(str(e))}")
+            raise
         return pool
 
     async def pool_connect(self, connection_url: Optional[str] = None) -> Optional[AsyncConnectionPool]:

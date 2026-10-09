@@ -81,3 +81,115 @@ class TestGracefulShutdown:
             result = await call_tool(session, "execute_sql", {"sql": "SELECT 'alive' AS s"})
             assert not result.isError
             assert "alive" in extract_text(result)
+
+
+# ---------------------------------------------------------------------------
+# The pre-connect script is stopped whenever the MCP exits (FR-12)
+# ---------------------------------------------------------------------------
+
+_UNREACHABLE_URL = "postgresql://u:p@192.0.2.1:5432/db?connect_timeout=1"
+
+
+def _write_tunnel_script(path, pid_file, db_url=None):
+    """Long-running script. Without `db_url` the MCP starts in
+    WAITING_FOR_URL and reaches the transport at once; with an unreachable
+    `db_url` it sits in the initial connect (psycopg pool timeout)."""
+    url_line = f'echo "[MCP] DB_URL {db_url}"\n' if db_url else ""
+    path.write_text(
+        "#!/bin/bash\n"
+        f'echo $$ > "{pid_file}"\n'
+        f"{url_line}"
+        'echo "[MCP] READY_TO_CONNECT"\n'
+        "sleep 600 &\n"
+        "SLEEP=$!\n"
+        "trap 'kill $SLEEP; exit 0' TERM\n"
+        "wait $SLEEP\n"
+    )
+    path.chmod(0o700)
+
+
+def _wait_for(predicate, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _start_mcp(script, extra_args=()):
+    return subprocess.Popen(
+        [sys.executable, "-m", "postgres_mcp", "--pre-connect-script", str(script), *extra_args],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "PYTHONPATH": "src"},
+    )
+
+
+class TestScriptStoppedOnExit:
+    def test_closing_stdin_stops_the_script(self, tmp_path):
+        pid_file = tmp_path / "script.pid"
+        script = tmp_path / "tunnel.sh"
+        _write_tunnel_script(script, pid_file)
+        proc = _start_mcp(script)
+        try:
+            assert _wait_for(pid_file.exists, 20), "script never started"
+            script_pid = int(pid_file.read_text())
+            time.sleep(1)
+            proc.stdin.close()
+            proc.wait(timeout=15)
+            assert _wait_for(lambda: not _pid_alive(script_pid), 7), "script still running after MCP exit"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_sigterm_on_streamable_http_stops_the_script(self, tmp_path):
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        pid_file = tmp_path / "script.pid"
+        script = tmp_path / "tunnel.sh"
+        _write_tunnel_script(script, pid_file)
+        proc = _start_mcp(script, ["--transport", "streamable-http", "--streamable-http-port", str(port)])
+        try:
+            assert _wait_for(pid_file.exists, 20), "script never started"
+            script_pid = int(pid_file.read_text())
+            time.sleep(2)
+            proc.send_signal(signal.SIGTERM)
+            code = proc.wait(timeout=15)
+            assert code == 128 + signal.SIGTERM
+            assert _wait_for(lambda: not _pid_alive(script_pid), 7), "script still running after MCP exit"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_sigterm_during_initial_connect_stops_the_script(self, tmp_path):
+        pid_file = tmp_path / "script.pid"
+        script = tmp_path / "tunnel.sh"
+        _write_tunnel_script(script, pid_file, db_url=_UNREACHABLE_URL)
+        proc = _start_mcp(script)
+        try:
+            assert _wait_for(pid_file.exists, 20), "script never started"
+            script_pid = int(pid_file.read_text())
+            time.sleep(1)
+            proc.send_signal(signal.SIGTERM)
+            code = proc.wait(timeout=15)
+            assert code == 128 + signal.SIGTERM
+            assert _wait_for(lambda: not _pid_alive(script_pid), 7), "script still running after MCP exit"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()

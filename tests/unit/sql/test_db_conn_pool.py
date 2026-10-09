@@ -304,3 +304,41 @@ async def test_pool_connect_no_script_no_url_still_raises():
 
     with pytest.raises(ValueError):
         await pool.pool_connect()
+
+
+@pytest.mark.asyncio
+async def test_create_pool_closes_pool_when_open_fails(mock_pool):
+    mock_pool.open.side_effect = OSError("connection refused")
+    db = DbConnPool(connection_url="postgresql://u:p@localhost/db")
+    with patch("postgres_mcp.sql.sql_driver.AsyncConnectionPool", return_value=mock_pool):
+        with pytest.raises(OSError):
+            await db._create_pool("postgresql://u:p@localhost/db")
+    mock_pool.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_pool_closes_pool_when_first_query_fails(mock_pool):
+    mock_pool.connection.side_effect = OSError("server closed the connection")
+    db = DbConnPool(connection_url="postgresql://u:p@localhost/db")
+    with patch("postgres_mcp.sql.sql_driver.AsyncConnectionPool", return_value=mock_pool):
+        with pytest.raises(OSError):
+            await db._create_pool("postgresql://u:p@localhost/db")
+    mock_pool.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_pool_closes_pool_when_cancelled(mock_pool):
+    import asyncio
+
+    async def _hang(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    mock_pool.open.side_effect = _hang
+    db = DbConnPool(connection_url="postgresql://u:p@localhost/db")
+    with patch("postgres_mcp.sql.sql_driver.AsyncConnectionPool", return_value=mock_pool):
+        task = asyncio.create_task(db._create_pool("postgresql://u:p@localhost/db"))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    mock_pool.close.assert_awaited_once()

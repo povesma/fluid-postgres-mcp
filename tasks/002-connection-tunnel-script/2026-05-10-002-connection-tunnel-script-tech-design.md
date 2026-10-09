@@ -512,7 +512,20 @@ class ThreadedProcess:
   exit with 128 + signal if a signal was received
   ```
   `shutdown_in_progress` and the `128 + sig` exit code are kept;
-  `sys.exit` no longer runs inside a task. The `finally` covers stdio
+  `sys.exit` no longer runs inside a task; `shutdown()` is removed.
+  Signal handlers are installed **before** the initial
+  `pool_connect()`, and that connect sits inside the same `try`: the
+  pre-connect script starts there, and the first connect to an
+  unreachable database can take the pool's full timeout (found in
+  12.3: a `SIGTERM` in that window used to kill the MCP with no
+  teardown). A signal that arrives after the transport returned only
+  sets the exit code; it does not cancel `main` again, so it cannot
+  interrupt `close()`.
+- **Failed connect closes its pool** (12.6): `_create_pool()` closes
+  the psycopg pool (`close(timeout=1.0)`) when `open()` or the first
+  query fails or is cancelled. Before, the pool's workers kept
+  reconnecting after every failed attempt and kept the process alive
+  after shutdown. The `finally` covers stdio
   EOF, transport errors, signals, `KeyboardInterrupt` (cancellation
   of `main` by `asyncio.run`), and Windows, where no signal handler
   exists.

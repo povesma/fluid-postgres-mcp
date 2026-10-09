@@ -428,6 +428,12 @@ Working examples — copy and adapt:
   The same happens if the MCP itself crashes or is killed. A
   run-and-exit script's background processes are released from the
   job and keep running.
+- **When the MCP exits.** The script is stopped whenever the MCP
+  exits normally: the agent closes the connection, the MCP gets
+  `SIGTERM`/`SIGINT` (also during its first connect), or the transport
+  fails. A second Ctrl+C while that stop is running is ignored by the
+  MCP, but on macOS / Linux a `kill -9` of the MCP at that moment can
+  still leave the script running.
 - **macOS `sleep` does not accept `infinity`.** Use a large integer
   (`exec sleep 2147483647`).
 - **Failure surface.** Exit-before-READY → mode is run-and-exit and
