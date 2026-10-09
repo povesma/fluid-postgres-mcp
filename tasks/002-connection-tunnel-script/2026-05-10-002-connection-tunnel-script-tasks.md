@@ -705,7 +705,7 @@ marked "amendment".
 - [X] 11.0 **User Story:** As an analyst on Windows, I want the
   script placed in a kill-on-close job object so that teardown (and
   an MCP crash) ends the whole process tree, while a run-and-exit
-  script's deliberate background process survives [6/0]
+  script's deliberate background process survives [10/0]
   - [X] 11.1 Look up on Microsoft Learn (WebFetch) and record in a
     code comment: `CreateJobObjectW`, `SetInformationJobObject`
     with `JobObjectExtendedLimitInformation`,
@@ -799,6 +799,42 @@ marked "amendment".
       PIDs could reach the real job API (risk of attaching and
       terminating an unrelated process); fixed with an autouse guard
       fixture [live] (2026-10-09)
+  - [X] 11.7 Write tests for `ThreadedProcess`
+    (`tests/unit/sql/test_threaded_process.py`, real processes, runs
+    on every OS): a `sys.executable -c` child printing two lines and
+    exiting 3 → both lines read in order from `stdout`, then EOF,
+    `returncode == 3`; `pid` matches; a sleeping child → `terminate()`
+    ends it and `returncode` becomes non-None; child cannot read the
+    MCP's stdin (`stdin=DEVNULL`: a child doing `sys.stdin.read()`
+    gets an empty string at once). Tests fail. [verify: auto-test]
+    → 5 tests (incl. missing executable → FileNotFoundError); red
+      as expected (module missing) [live] (2026-10-09)
+  - [X] 11.8 Implement `src/postgres_mcp/sql/threaded_process.py`
+    per tech-design §Spawning on Windows; 11.7 passes.
+    [verify: auto-test]
+    → 5 passed on macOS and on Windows [live] (2026-10-09)
+  - [X] 11.9 Use it in `_spawn()`: `_is_windows()` →
+    `ThreadedProcess.start(argv)`, else `create_subprocess_exec`.
+    Add a manager test with `_is_windows` patched True and a real
+    script (`sys.executable -c` printing READY then sleeping):
+    LONG_RUNNING detected; `_make_job` raising `OSError` → `stop()`
+    falls back to `kill()` and the process is gone. Unit suite green.
+    [verify: auto-test]
+    → real-script test passes; fake-process tests on the Windows
+      branch now patch `ThreadedProcess.start`; `test_pre_connect_hook.py`
+      got the same POSIX/guard fixture (it mocks the POSIX spawn);
+      macOS unit suite 300 passed, 4 skipped, 1 xfailed [live]
+      (2026-10-09)
+  - [X] 11.10 Windows, production loop: a test in
+    `tests/unit/sql/test_win_job.py` (Windows only) that runs
+    `ConnectionScriptManager` under `WindowsSelectorEventLoopPolicy`
+    (as `postgres_mcp.main()` does) with a real script that starts a
+    grandchild and emits READY: READY detected, `stop()` ends script
+    and grandchild. Run on the Windows test machine.
+    [verify: manual-run-claude]
+    → on Windows under the selector loop: READY received via
+      ThreadedProcess, stop() ended script and grandchild through the
+      job; Windows tests/unit/sql 167 passed [live] (2026-10-09)
 
 - [ ] 12.0 **User Story:** As an analyst who closes the agent, I want
   `server.main()` to be the single teardown owner on every exit path

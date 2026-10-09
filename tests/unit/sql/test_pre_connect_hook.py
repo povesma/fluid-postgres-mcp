@@ -19,6 +19,19 @@ from postgres_mcp.sql.sql_driver import ConnState
 from postgres_mcp.sql.sql_driver import DbConnPool
 
 
+@pytest.fixture(autouse=True)
+def _posix_branch_with_mocked_spawn():
+    """These tests mock `asyncio.create_subprocess_exec` (the POSIX spawn
+    path); on Windows the manager would otherwise start a real process via
+    ThreadedProcess, and a mocked PID must never reach the job API."""
+    guard = AssertionError("real _make_job called with a mocked PID")
+    with (
+        patch("postgres_mcp.sql.connection_script._is_windows", return_value=False),
+        patch("postgres_mcp.sql.connection_script._make_job", side_effect=guard),
+    ):
+        yield
+
+
 def _make_pool(script: str | None = "/bin/true", hook_timeout: float = 5.0, **kwargs):
     cfg = ReconnectConfig(
         pre_connect_script=script,

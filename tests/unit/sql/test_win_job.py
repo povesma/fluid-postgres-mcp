@@ -74,6 +74,43 @@ def test_close_with_kill_on_close_ends_tree(tree):
     assert _wait_dead(grandchild)
 
 
+def test_manager_under_selector_loop_stops_script_and_grandchild(tmp_path):
+    """Production conditions: postgres_mcp.main() installs the selector loop on Windows."""
+    import asyncio
+
+    from postgres_mcp.sql.connection_script import ConnectionScriptManager
+    from postgres_mcp.sql.connection_script import ScriptMode
+
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    script = tmp_path / "tunnel.py"
+    script.write_text(
+        "import subprocess, sys, time\n"
+        "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])\n"
+        f"open(r'{grandchild_pid_file}', 'w').write(str(g.pid))\n"
+        "print('[MCP] READY_TO_CONNECT', flush=True)\n"
+        "time.sleep(600)\n"
+    )
+
+    async def scenario():
+        mgr = ConnectionScriptManager(script=f'"{sys.executable}" "{script}"', hook_timeout=30.0)
+        outcome = await mgr.ensure_ready()
+        script_pid = mgr._proc.pid
+        await mgr.stop()
+        return outcome, script_pid
+
+    previous = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        outcome, script_pid = asyncio.run(scenario())
+    finally:
+        asyncio.set_event_loop_policy(previous)
+
+    assert outcome.success is True
+    assert outcome.mode is ScriptMode.LONG_RUNNING
+    assert _wait_dead(script_pid)
+    assert _wait_dead(int(grandchild_pid_file.read_text()))
+
+
 def test_release_leaves_tree_running(tree):
     job, grandchild = _attach_and_read_grandchild(tree)
     job.release()

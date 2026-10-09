@@ -154,14 +154,19 @@ def install_fake_proc_factory(monkeypatch_or_patch_target: str):
 
     factory = _Factory()
 
-    async def fake_create_subprocess_exec(*argv, **kwargs):
+    def _spawn(argv) -> FakeProcess:
         fp = FakeProcess()
         if factory.next is not None:
             factory.next(fp)
             factory.next = None
-        spawn_records.append((argv, fp))
+        spawn_records.append((tuple(argv), fp))
         return fp
 
+    async def fake_create_subprocess_exec(*argv, **kwargs):
+        return _spawn(argv)
+
+    # Synchronous twin for `ThreadedProcess.start(argv)` (Windows branch).
+    fake_create_subprocess_exec.sync = _spawn
     return spawn_records, factory, fake_create_subprocess_exec
 
 
@@ -1075,6 +1080,11 @@ class TestGracefulTeardown:
 # ---------------------------------------------------------------------------
 
 
+def _threaded_start(fake_exec):
+    """On the Windows branch the manager calls `ThreadedProcess.start(argv)`."""
+    return patch("postgres_mcp.sql.connection_script.ThreadedProcess.start", side_effect=fake_exec.sync)
+
+
 class FakeJob:
     def __init__(self, pid: int) -> None:
         self.pid = pid
@@ -1116,7 +1126,7 @@ class TestWindowsJob:
 
         factory.next = _on_spawn
         mgr, events = _make_manager(script="/bin/cat", hook_timeout=2.0)
-        with patch("asyncio.create_subprocess_exec", fake_exec):
+        with patch("asyncio.create_subprocess_exec", fake_exec), _threaded_start(fake_exec):
             assert (await mgr.ensure_ready()).success is True
         return mgr, events, captured[0]
 
@@ -1160,7 +1170,7 @@ class TestWindowsJob:
         p_win, p_job = self._patch_windows(jobs)
         with p_win, p_job:
             mgr, _events = _make_manager(script="/bin/true", hook_timeout=2.0)
-            with patch("asyncio.create_subprocess_exec", fake_exec):
+            with patch("asyncio.create_subprocess_exec", fake_exec), _threaded_start(fake_exec):
                 task = asyncio.create_task(mgr.ensure_ready())
                 while not jobs:
                     await asyncio.sleep(0.01)
@@ -1199,6 +1209,28 @@ class TestWindowsJob:
         assert fp.terminated is False
 
     @pytest.mark.asyncio
+    async def test_windows_spawn_uses_threaded_process_with_real_script(self, tmp_path):
+        import sys
+
+        from postgres_mcp.sql.connection_script import ConnectionScriptManager
+        from postgres_mcp.sql.connection_script import ScriptMode
+        from postgres_mcp.sql.threaded_process import ThreadedProcess
+
+        script = tmp_path / "s.py"
+        script.write_text("import time\nprint('[MCP] READY_TO_CONNECT', flush=True)\ntime.sleep(60)\n")
+        p_win, p_job = self._patch_windows([], attach_error=OSError(5, "Access is denied"))
+        with p_win, p_job:
+            mgr = ConnectionScriptManager(script=f'"{sys.executable}" "{script}"', hook_timeout=10.0)
+            outcome = await mgr.ensure_ready()
+            assert outcome.success is True
+            assert outcome.mode is ScriptMode.LONG_RUNNING
+            proc = mgr._proc
+            assert isinstance(proc, ThreadedProcess)
+            await mgr.stop()
+
+        assert proc.returncode is not None
+
+    @pytest.mark.asyncio
     async def test_already_exited_process_is_not_attached(self):
         _spawns, factory, fake_exec = install_fake_proc_factory("")
         factory.next = lambda fp: fp.set_exit_code(0)
@@ -1206,7 +1238,7 @@ class TestWindowsJob:
         p_win, p_job = self._patch_windows(jobs)
         with p_win, p_job:
             mgr, events = _make_manager(script="/bin/true", hook_timeout=2.0)
-            with patch("asyncio.create_subprocess_exec", fake_exec):
+            with patch("asyncio.create_subprocess_exec", fake_exec), _threaded_start(fake_exec):
                 outcome = await mgr.ensure_ready()
 
         assert outcome.success is True

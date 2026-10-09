@@ -20,6 +20,7 @@ from typing import Callable
 from typing import Optional
 from urllib.parse import urlparse
 
+from postgres_mcp.sql.threaded_process import ThreadedProcess
 from postgres_mcp.sql.utils import obfuscate_password
 
 logger = logging.getLogger(__name__)
@@ -287,12 +288,17 @@ class ConnectionScriptManager:
             self._proc = None
             raise _SpawnError(f"invalid pre-connect-script command: {exc}") from exc
         try:
-            # stderr is inherited: nothing reads it, and an unread pipe
-            # blocks a script that writes more than one buffer.
-            self._proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdout=asyncio.subprocess.PIPE,
-            )
+            if _is_windows():
+                # The Windows selector loop (needed by psycopg) cannot run
+                # asyncio subprocesses.
+                self._proc = ThreadedProcess.start(argv)
+            else:
+                # stderr is inherited: nothing reads it, and an unread pipe
+                # blocks a script that writes more than one buffer.
+                self._proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdout=asyncio.subprocess.PIPE,
+                )
         except (FileNotFoundError, PermissionError, OSError) as exc:
             self._proc = None
             raise _SpawnError(str(exc)) from exc

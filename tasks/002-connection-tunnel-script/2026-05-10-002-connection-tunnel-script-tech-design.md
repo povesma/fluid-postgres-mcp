@@ -437,6 +437,53 @@ here.
   or access denied)`, script keeps running, teardown falls back to
   `proc.kill()`.
 
+#### Spawning on Windows: `ThreadedProcess` (new, amendment — FR-9, FR-11)
+
+**Problem (found 2026-10-09 during 12.x prep):** `postgres_mcp.main()`
+sets `WindowsSelectorEventLoopPolicy` on Windows, because psycopg's
+async mode needs a selector loop there (`__init__.py:10-14`). On
+Windows the selector loop cannot run subprocesses: "On Windows,
+ProactorEventLoop supports subprocesses, while SelectorEventLoop does
+not" (Python docs, asyncio platform support).
+`create_subprocess_exec` raises `NotImplementedError` — reproduced on
+the Windows test machine. So the pre-connect script never started on
+Windows, in any released version.
+
+**Design (user decision 2026-10-09, option A):** on Windows the
+manager starts the script with `subprocess.Popen` wrapped in
+`ThreadedProcess` (`src/postgres_mcp/sql/threaded_process.py`), which
+offers the subset of `asyncio.subprocess.Process` the manager uses:
+
+```
+class ThreadedProcess:
+    @classmethod
+    def start(cls, argv: list[str]) -> ThreadedProcess  # Popen, stdout=PIPE, stdin=DEVNULL
+    pid: int
+    returncode: Optional[int]     # property, calls Popen.poll()
+    stdout                        # async iterator of bytes lines
+    def terminate(self) -> None
+    def kill(self) -> None
+```
+
+- A daemon thread reads `stdout` line by line and hands each line to
+  the event loop with `loop.call_soon_threadsafe` into an
+  `asyncio.Queue`; EOF puts a sentinel. The manager's reader loop is
+  unchanged (`async for raw in proc.stdout`).
+- Exit detection already polls `returncode` (`_wait_exited`), so it
+  works with `Popen` unchanged.
+- `stdin=DEVNULL`: on the stdio transport the MCP's own stdin carries
+  the protocol; the script must not be able to read it.
+- Selection: `_is_windows()` → `ThreadedProcess.start(argv)`,
+  otherwise `asyncio.create_subprocess_exec` as before. POSIX is
+  unchanged.
+- Side effect: `Popen` returns straight after `CreateProcess`, with no
+  event-loop iterations before the job is attached, so the attach
+  race (§`WindowsJob`) shrinks to the time between two Python
+  statements.
+- Rejected: a second Proactor loop in a thread (more moving parts,
+  two loops to keep in step); Proactor for the whole MCP (psycopg's
+  async mode does not support it on Windows).
+
 #### `server.py` exit path (modified, amendment — FR-9, FR-12)
 
 - **Startup validation**: in `main()`, between `parse_config(args)`
