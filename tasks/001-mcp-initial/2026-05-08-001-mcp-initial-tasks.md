@@ -23,11 +23,11 @@
   SqlDriver extensions
 - `tests/unit/test_event_store.py` :: Tests for EventStore (create)
 - `tests/unit/test_config.py` :: Tests for config parsing (create)
-- `tests/integration/test_file_output.py` :: File streaming tests
+- `tests/integration/test_file_output_integration.py` :: File streaming tests
   (create)
-- `tests/integration/test_reconnect.py` :: Reconnection tests
+- `tests/integration/test_reconnect_integration.py` :: Reconnection tests
   (create)
-- `tests/integration/test_timeout.py` :: Timeout tests (create)
+- `tests/integration/test_timeout_integration.py` :: Timeout tests (create)
 - `tests/integration/test_pre_connect.py` :: Pre-connect hook tests
   (create)
 - `tests/integration/test_status.py` :: Status tool e2e tests (create)
@@ -347,14 +347,14 @@
     [verify: code-only]
   - [X] 9.2 Integration test: file export of 500K rows —
     CSV file valid, row count correct, memory bounded.
-    (`tests/integration/test_file_output.py`)
+    (`tests/integration/test_file_output_integration.py`)
     [verify: auto-test]
     → pytest: 4 passed in 81s [live] (2026-05-09). Fixed
       memoryview bug in _copy_to_file (psycopg3 yields
       memoryview, not bytes)
   - [X] 9.3 Integration test: `pg_terminate_backend()` drops
     connection, next query triggers reconnect, subsequent
-    query succeeds. (`tests/integration/test_reconnect.py`)
+    query succeeds. (`tests/integration/test_reconnect_integration.py`)
     [verify: auto-test]
     → pytest: 4 passed in 88s [live] (2026-05-09). Verified
       reconnect after pool invalidation, count increments,
@@ -362,7 +362,7 @@
   - [X] 9.4 Integration test: `pg_sleep(10)` with
     `timeout_ms=1000` returns timeout error in ~1s,
     next query succeeds on same connection.
-    (`tests/integration/test_timeout.py`) [verify: auto-test]
+    (`tests/integration/test_timeout_integration.py`) [verify: auto-test]
     → pytest: 5 passed in 64s [live] (2026-05-09). Verified
       timeout cancellation, connection reuse after timeout,
       no-timeout and zero-timeout paths
