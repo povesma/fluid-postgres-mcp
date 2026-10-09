@@ -620,7 +620,7 @@ marked "amendment".
       OS; teardown README text moved to 10.3/11.4/12.2 [live]
       (2026-10-09)
 
-- [ ] 10.0 **User Story:** As a script author on POSIX, I want
+- [X] 10.0 **User Story:** As a script author on POSIX, I want
   teardown to send `SIGTERM`, wait a 5 s grace period, then kill, so
   that my script's cleanup handler stops its tunnel children [7/0]
   - [X] 10.1 Extend `FakeProcess` in `test_connection_script.py`
@@ -679,7 +679,7 @@ marked "amendment".
       `proc.wait()` after SIGKILL (a child held stdout open, Python
       3.12 waits for pipes) — fixed in 10.3 by polling `returncode`
       [live] (2026-10-09)
-  - [~] 10.6 Run the full suite (unit + integration + existing
+  - [X] 10.6 Run the full suite (unit + integration + existing
     E2E per Notes). Zero failures; the only changed existing
     assertion is the one from 10.1. [verify: auto-test]
     → unit 288 passed, 1 xfailed; integration 18 passed, 9 skipped,
@@ -687,6 +687,9 @@ marked "amendment".
       bitnami/postgresql` → "repo bitnami not found" (environment,
       not code); E2E not run. Unit and integration must run
       separately (duplicate test basenames) (2026-10-09)
+    → after 12.8/12.9: unit + integration 354 passed, 0 errors; local
+      E2E 35 passed (4 skips are the opt-in `CAPTURE_OUTCOMES`
+      harness); AWS SSM E2E not run (on demand) [live] (2026-10-10)
   - [X] 10.7 Exit detection with a child holding stdout (found in
     10.5): `_watch_exit()` and `wait_for_exit()` await
     `proc.wait()`, which on Python 3.12+ returns only after all
@@ -836,9 +839,9 @@ marked "amendment".
       ThreadedProcess, stop() ended script and grandchild through the
       job; Windows tests/unit/sql 167 passed [live] (2026-10-09)
 
-- [ ] 12.0 **User Story:** As an analyst who closes the agent, I want
+- [X] 12.0 **User Story:** As an analyst who closes the agent, I want
   `server.main()` to be the single teardown owner on every exit path
-  so that no tunnel process outlives the MCP [8/0]
+  so that no tunnel process outlives the MCP [9/0]
   - [X] 12.1 Write unit tests in `tests/unit/test_transport.py`
     with a stubbed transport and a stub `db_connection` that counts
     `close()` calls. The signal handler is a closure inside
@@ -898,12 +901,19 @@ marked "amendment".
     teardown, return to 12.2 and fix it there. [verify: e2e]
     → streamable-http + SIGTERM: exit code 143, script gone, single
       teardown (uvicorn 0.54.0) [live] (2026-10-09)
-  - [~] 12.5 Run the full suite (unit + integration + E2E). Zero
+  - [X] 12.5 Run the full suite (unit + integration + E2E). Zero
     failures. [verify: auto-test]
     → unit 311 passed, 4 skipped, 1 xfailed; new E2E 3 passed;
       DB-backed integration and other E2E not run (helm `bitnami`
       repo missing, SSM env) — same environment gap as 10.6
       (2026-10-09)
+    → combined unit + integration: 330 passed, 13 skipped, 1 xfailed,
+      24 errors — bitnami repo now registered, but `helm install
+      --wait` does not finish within the fixture's 180 s limit
+      (environment); E2E not run (2026-10-09)
+    → after 12.9: unit + integration 354 passed, 0 errors; local E2E
+      35 passed (4 opt-in `CAPTURE_OUTCOMES` skips); AWS SSM E2E not
+      run (on demand) [live] (2026-10-10)
   - [X] 12.6 Close the psycopg pool when the first connect fails or is
     cancelled (found in 12.3: `DbConnPool._create_pool()`,
     `sql_driver.py:87-99`, closes nothing on failure, so the pool's
@@ -939,6 +949,21 @@ marked "amendment".
     → integration files renamed to `test_*_integration.py` (repo
       convention); `pytest tests/unit tests/integration` collects 368
       tests, exit 0 [live] (2026-10-09)
+  - [X] 12.9 Test environment (found in 12.5): the DB-backed integration
+    and E2E tests get PostgreSQL from `tests/k8s_fixtures.py` (helm
+    `bitnami/postgresql` in a Kubernetes cluster), whose install no
+    longer finishes. Start PostgreSQL in local Docker instead with the
+    existing `create_postgres_container()` (`tests/utils.py`): session
+    fixture `pg_connection_string` in `tests/conftest.py`; rename
+    `k8s_pg_connection_string` / `k8s_sql_driver` /
+    `k8s_pg_with_test_data` to `pg_*` in `tests/integration` and
+    `tests/e2e`; delete `tests/k8s_fixtures.py`; update
+    `tests/README.md` and `TESTING-METHODOLOGY.md`. Combined unit +
+    integration run: zero errors, DB tests not skipped.
+    [verify: auto-test]
+    → unit + integration on Docker `postgres:16`: 354 passed, 13
+      skipped (same pre-existing skips), 1 xfailed, 0 errors
+      [live] (2026-10-10)
 
 - [X] 13.0 **User Story:** As the maintainer, I want every
   Windows-only acceptance criterion checked on the Windows test

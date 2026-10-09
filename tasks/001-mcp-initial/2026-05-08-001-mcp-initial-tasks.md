@@ -31,7 +31,8 @@
 - `tests/integration/test_pre_connect.py` :: Pre-connect hook tests
   (create)
 - `tests/integration/test_status.py` :: Status tool e2e tests (create)
-- `tests/k8s_fixtures.py` :: Helm-based PostgreSQL lifecycle for k8s
+- `tests/utils.py` :: Docker PostgreSQL lifecycle for integration/E2E
+  (replaced `tests/k8s_fixtures.py`, see 002 task 12.9)
   integration tests (create)
 - `tests/e2e/mcp_client_fixtures.py` :: MCP stdio client fixture
   for E2E tests (create)
