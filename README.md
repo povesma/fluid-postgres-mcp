@@ -422,6 +422,12 @@ Working examples — copy and adapt:
   tunnel's child processes in a `SIGTERM` handler; the MCP signals
   only the process it started, not children you placed in their own
   session or process group.
+- **Stopping the script (Windows).** The script runs in a Windows job
+  object. Stopping it ends the script and every process it started at
+  once — there is no graceful step, so do not rely on cleanup code.
+  The same happens if the MCP itself crashes or is killed. A
+  run-and-exit script's background processes are released from the
+  job and keep running.
 - **macOS `sleep` does not accept `infinity`.** Use a large integer
   (`exec sleep 2147483647`).
 - **Failure surface.** Exit-before-READY → mode is run-and-exit and

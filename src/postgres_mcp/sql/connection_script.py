@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 _TERMINATE_GRACE_S = 5.0
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _make_job(pid: int):
+    from postgres_mcp.sql.win_job import WindowsJob
+
+    return WindowsJob.for_pid(pid)
+
+
 async def _wait_exited(proc: asyncio.subprocess.Process, timeout: Optional[float] = None) -> bool:
     """Wait until `proc` has exited; False on timeout (None = no limit).
 
@@ -144,6 +154,8 @@ class ConnectionScriptManager:
 
         self._mode: ScriptMode = ScriptMode.NONE if script is None else ScriptMode.NONE
         self._proc: Optional[asyncio.subprocess.Process] = None
+        # Windows only: kill-on-close job holding the script's process tree.
+        self._job = None
         self._reader_task: Optional[asyncio.Task] = None
         self._exit_watcher_task: Optional[asyncio.Task] = None
 
@@ -247,6 +259,7 @@ class ConnectionScriptManager:
             )
 
         if exit_wait in done and ready_wait not in done:
+            self._close_job()
             await self._reap_reader()
             self._proc = None
             return ScriptOutcome(
@@ -283,6 +296,7 @@ class ConnectionScriptManager:
         except (FileNotFoundError, PermissionError, OSError) as exc:
             self._proc = None
             raise _SpawnError(str(exc)) from exc
+        self._attach_job(self._proc)
 
         # Reader task consumes stdout and dispatches protocol lines.
         self._reader_task = asyncio.create_task(self._reader_loop(self._proc))
@@ -325,6 +339,8 @@ class ConnectionScriptManager:
             pid = proc.pid
             self._emit(f"Pre-connect-script started (mode=run_and_exit, pid={pid})")
             self._emit(f"Pre-connect-script exited (code={code})")
+            # Keep any background process the script left running on purpose.
+            self._release_job()
             await self._reap_reader()
             self._proc = None
             success = code == 0
@@ -359,6 +375,9 @@ class ConnectionScriptManager:
         proc = self._proc
         code = proc.returncode if proc is not None else -1
         self._emit(f"Pre-connect-script exited (code={code})")
+        # A long-running script died: end whatever it left behind, so the
+        # restarted script can bind the same port.
+        self._close_job()
 
     # ------------------------------------------------------------------
     # Subprocess plumbing
@@ -404,10 +423,40 @@ class ConnectionScriptManager:
             # Signal before reaping the reader so stdout keeps draining
             # while the script's SIGTERM handler runs.
             await self._stop_process(proc)
+        self._close_job()
         await self._reap_reader()
         self._proc = None
 
+    def _attach_job(self, proc: asyncio.subprocess.Process) -> None:
+        if not _is_windows() or proc.returncode is not None:
+            return
+        try:
+            self._job = _make_job(proc.pid)
+        except OSError as exc:
+            self._job = None
+            self._emit(
+                f"Pre-connect-script could not attach job object ({exc}) — child processes may survive "
+                "teardown (enclosing job restrictions or access denied)"
+            )
+
+    def _release_job(self) -> None:
+        job, self._job = self._job, None
+        if job is None:
+            return
+        try:
+            job.release()
+        except OSError as exc:
+            self._emit(f"Pre-connect-script could not release job object ({exc}); its processes end when the MCP exits")
+
+    def _close_job(self) -> None:
+        job, self._job = self._job, None
+        if job is not None:
+            job.close()
+
     async def _stop_process(self, proc: asyncio.subprocess.Process) -> None:
+        if _is_windows():
+            await self._stop_process_windows(proc)
+            return
         self._emit("Pre-connect-script stop requested (SIGTERM)")
         try:
             proc.terminate()
@@ -420,6 +469,24 @@ class ConnectionScriptManager:
             proc.kill()
         except ProcessLookupError:
             return
+        if not await _wait_exited(proc, _TERMINATE_GRACE_S):
+            self._emit(f"Pre-connect-script still running {_TERMINATE_GRACE_S:g}s after kill (pid={proc.pid})")
+
+    async def _stop_process_windows(self, proc: asyncio.subprocess.Process) -> None:
+        # Windows has no graceful step: end the whole tree at once.
+        job = self._job
+        if job is not None:
+            try:
+                job.terminate()
+                self._emit("Pre-connect-script process tree terminated")
+            except OSError as exc:
+                self._emit(f"Pre-connect-script could not terminate job object ({exc}); killing the script process only")
+                job = None
+        if job is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                return
         if not await _wait_exited(proc, _TERMINATE_GRACE_S):
             self._emit(f"Pre-connect-script still running {_TERMINATE_GRACE_S:g}s after kill (pid={proc.pid})")
 

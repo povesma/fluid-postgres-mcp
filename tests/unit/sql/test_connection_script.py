@@ -16,6 +16,22 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _posix_branch_with_fake_pids():
+    """Fake PIDs must never reach the real Windows job API.
+
+    On Windows a fake PID can match a real process of the same user, which
+    `_make_job` would attach to a job and teardown would then terminate.
+    Tests that exercise the Windows branch patch both names themselves.
+    """
+    guard = AssertionError("real _make_job called with a fake PID")
+    with (
+        patch("postgres_mcp.sql.connection_script._is_windows", return_value=False),
+        patch("postgres_mcp.sql.connection_script._make_job", side_effect=guard),
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # FakeProcess — drop-in for asyncio.subprocess.Process
 # ---------------------------------------------------------------------------
@@ -1052,3 +1068,147 @@ class TestGracefulTeardown:
         assert "terminate" in fp.calls
         if "reader-cancelled" in fp.calls:
             assert fp.calls.index("terminate") < fp.calls.index("reader-cancelled")
+
+
+# ---------------------------------------------------------------------------
+# Windows branch: job object (faked; runs on any OS)
+# ---------------------------------------------------------------------------
+
+
+class FakeJob:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.calls: List[str] = []
+        self.on_terminate = None
+
+    def terminate(self, exit_code: int = 1) -> None:
+        self.calls.append("terminate")
+        if self.on_terminate is not None:
+            self.on_terminate()
+
+    def release(self) -> None:
+        self.calls.append("release")
+
+    def close(self) -> None:
+        self.calls.append("close")
+
+
+class TestWindowsJob:
+    def _patch_windows(self, jobs: List[FakeJob], attach_error: Optional[OSError] = None):
+        def _make_job(pid: int) -> FakeJob:
+            if attach_error is not None:
+                raise attach_error
+            job = FakeJob(pid)
+            jobs.append(job)
+            return job
+
+        return (
+            patch("postgres_mcp.sql.connection_script._is_windows", return_value=True),
+            patch("postgres_mcp.sql.connection_script._make_job", side_effect=_make_job),
+        )
+
+    async def _start_long_running(self, fake_exec, factory):
+        captured: List[FakeProcess] = []
+
+        def _on_spawn(fp: FakeProcess) -> None:
+            fp.feed_line("[MCP] READY_TO_CONNECT")
+            captured.append(fp)
+
+        factory.next = _on_spawn
+        mgr, events = _make_manager(script="/bin/cat", hook_timeout=2.0)
+        with patch("asyncio.create_subprocess_exec", fake_exec):
+            assert (await mgr.ensure_ready()).success is True
+        return mgr, events, captured[0]
+
+    @pytest.mark.asyncio
+    async def test_job_attached_once_after_spawn(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        jobs: List[FakeJob] = []
+        p_win, p_job = self._patch_windows(jobs)
+        with p_win, p_job:
+            mgr, _events, fp = await self._start_long_running(fake_exec, factory)
+            assert len(jobs) == 1
+            assert jobs[0].pid == fp.pid
+            jobs[0].on_terminate = lambda: fp.set_exit_code(1)
+            await mgr.stop()
+
+    @pytest.mark.asyncio
+    async def test_teardown_terminates_job_not_process(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        jobs: List[FakeJob] = []
+        p_win, p_job = self._patch_windows(jobs)
+        with p_win, p_job:
+            mgr, events, fp = await self._start_long_running(fake_exec, factory)
+            jobs[0].on_terminate = lambda: fp.set_exit_code(1)
+            await mgr.stop()
+
+        assert jobs[0].calls == ["terminate", "close"]
+        assert fp.killed is False
+        assert fp.terminated is False
+        assert any("process tree terminated" in e for e in events)
+
+    @pytest.mark.asyncio
+    async def test_run_and_exit_releases_job(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        jobs: List[FakeJob] = []
+        captured: List[FakeProcess] = []
+
+        def _on_spawn(fp: FakeProcess) -> None:
+            captured.append(fp)
+
+        factory.next = _on_spawn
+        p_win, p_job = self._patch_windows(jobs)
+        with p_win, p_job:
+            mgr, _events = _make_manager(script="/bin/true", hook_timeout=2.0)
+            with patch("asyncio.create_subprocess_exec", fake_exec):
+                task = asyncio.create_task(mgr.ensure_ready())
+                while not jobs:
+                    await asyncio.sleep(0.01)
+                captured[0].set_exit_code(0)
+                outcome = await task
+
+        assert outcome.success is True
+        assert jobs[0].calls == ["release"]
+
+    @pytest.mark.asyncio
+    async def test_long_running_self_exit_closes_job(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        jobs: List[FakeJob] = []
+        p_win, p_job = self._patch_windows(jobs)
+        with p_win, p_job:
+            mgr, _events, fp = await self._start_long_running(fake_exec, factory)
+            fp.set_exit_code(2)
+            for _ in range(50):
+                if "close" in jobs[0].calls:
+                    break
+                await asyncio.sleep(0.02)
+            await mgr.stop()
+
+        assert jobs[0].calls == ["close"]
+
+    @pytest.mark.asyncio
+    async def test_attach_failure_warns_and_falls_back_to_kill(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        p_win, p_job = self._patch_windows([], attach_error=OSError(5, "Access is denied"))
+        with p_win, p_job:
+            mgr, events, fp = await self._start_long_running(fake_exec, factory)
+            await mgr.stop()
+
+        assert any("could not attach job object" in e for e in events)
+        assert fp.killed is True
+        assert fp.terminated is False
+
+    @pytest.mark.asyncio
+    async def test_already_exited_process_is_not_attached(self):
+        _spawns, factory, fake_exec = install_fake_proc_factory("")
+        factory.next = lambda fp: fp.set_exit_code(0)
+        jobs: List[FakeJob] = []
+        p_win, p_job = self._patch_windows(jobs)
+        with p_win, p_job:
+            mgr, events = _make_manager(script="/bin/true", hook_timeout=2.0)
+            with patch("asyncio.create_subprocess_exec", fake_exec):
+                outcome = await mgr.ensure_ready()
+
+        assert outcome.success is True
+        assert jobs == []
+        assert not any("could not attach" in e for e in events)

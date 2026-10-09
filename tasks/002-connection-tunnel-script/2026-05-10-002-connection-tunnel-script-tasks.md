@@ -702,11 +702,11 @@ marked "amendment".
       real-process tests pass in 2.2s; unit suite 288 passed,
       1 xfailed; tech-design updated [live] (2026-10-09)
 
-- [ ] 11.0 **User Story:** As an analyst on Windows, I want the
+- [X] 11.0 **User Story:** As an analyst on Windows, I want the
   script placed in a kill-on-close job object so that teardown (and
   an MCP crash) ends the whole process tree, while a run-and-exit
   script's deliberate background process survives [6/0]
-  - [ ] 11.1 Look up on Microsoft Learn (WebFetch) and record in a
+  - [X] 11.1 Look up on Microsoft Learn (WebFetch) and record in a
     code comment: `CreateJobObjectW`, `SetInformationJobObject`
     with `JobObjectExtendedLimitInformation`,
     `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` /
@@ -716,7 +716,9 @@ marked "amendment".
     `AssignProcessToJobObject`, `TerminateJobObject`,
     `CloseHandle`. Note each constant's value and source URL.
     [verify: code-only]
-  - [ ] 11.2 Create `src/postgres_mcp/sql/win_job.py` with class
+    → values and URLs recorded in the `win_job.py` docstring
+      (2026-10-09)
+  - [X] 11.2 Create `src/postgres_mcp/sql/win_job.py` with class
     `WindowsJob`: `for_pid(pid)` (create job, set kill-on-close,
     open process, assign, close process handle; any failure closes
     what was opened and raises `OSError` with the Win32 error),
@@ -724,7 +726,10 @@ marked "amendment".
     close), `close()`. ctypes `kernel32` with explicit
     `argtypes`/`restype`, `use_last_error=True`. Module must not be
     imported on POSIX. [verify: code-only]
-  - [ ] 11.3 Write unit tests in `test_connection_script.py` for
+    → `release()` keeps the handle open if clearing kill-on-close
+      fails, so released processes are not killed; ruff clean
+      (2026-10-09)
+  - [X] 11.3 Write unit tests in `test_connection_script.py` for
     the Windows branch by patching two module-level seams in
     `connection_script.py` — `_is_windows()` (returns `True`) and
     `_make_job(pid)` (returns a fake job). Never patch `os.name`
@@ -738,7 +743,9 @@ marked "amendment".
     teardown falls back to `proc.kill()`; process already exited
     at attach time → no attach, no warning. Tests fail.
     [verify: auto-test]
-  - [ ] 11.4 Implement the Windows branch in
+    → 6 tests in TestWindowsJob; red as expected (seams missing)
+      [live] (2026-10-09)
+  - [X] 11.4 Implement the Windows branch in
     `connection_script.py`: add the seams `_is_windows()`
     (`os.name == "nt"`) and `_make_job(pid)` (imports `win_job`
     inside the function, returns `WindowsJob.for_pid(pid)`); attach
@@ -751,14 +758,26 @@ marked "amendment".
     tree ends at once, with no graceful step, also if the MCP
     crashes. 11.3 passes; full unit suite green on macOS.
     [verify: auto-test]
-  - [ ] 11.5 Create `tests/unit/sql/test_win_job.py`
+    → 11.3 passes (Windows branch simulated on macOS via the seams;
+      real run in 11.6); unit suite 294 passed, 3 skipped,
+      1 xfailed; README updated [simulated: no Windows host yet]
+      (2026-10-09)
+    → on Windows: tests/unit/sql 160 passed (Windows branch, native
+      split rules, real job tests) [live] (2026-10-09)
+  - [X] 11.5 Create `tests/unit/sql/test_win_job.py`
     (`pytest.mark.skipif(os.name != "nt")`): `WindowsJob.for_pid`
     on a `python -c` child that starts a `python -c` grandchild
     sleeping; `terminate()` ends both (check by PID); `release()`
     leaves both running (then clean up); `close()` with
     kill-on-close ends both. Skipped on macOS; full unit suite
     still green on macOS. [verify: auto-test]
-  - [ ] 11.6 Windows setup and first Windows run (pulled forward so
+    → 3 tests written; the child waits for a stdin line sent after
+      attach, so the grandchild starts inside the job; skipped on
+      macOS, unit suite green [simulated: runs on Windows in 11.6]
+      (2026-10-09)
+    → on Windows: 3 passed — terminate and close end child and
+      grandchild, release leaves both running [live] (2026-10-09)
+  - [X] 11.6 Windows setup and first Windows run (pulled forward so
     ctypes bugs surface here, not at the end): over SSH, install
     `uv` at user level with the official PowerShell installer and
     `uv python install 3.12`; copy the working-tree version of
@@ -771,6 +790,15 @@ marked "amendment".
     Record versions, the path (as `<user>` placeholder) and pass
     counts. Commands need the user's approval as they run.
     [verify: manual-run-claude]
+    → uv 0.12.24 (installer needs `powershell -ExecutionPolicy
+      ByPass` for its own process; machine policy unchanged), Python
+      3.12.15; tree in `C:\Users\<user>\fpm test` (tar of tracked +
+      new files; macOS `._*` metadata removed); editable install
+      from the path with a space works; test_win_job.py 3 passed,
+      tests/unit/sql 160 passed. First Windows run showed FakeProcess
+      PIDs could reach the real job API (risk of attaching and
+      terminating an unrelated process); fixed with an autouse guard
+      fixture [live] (2026-10-09)
 
 - [ ] 12.0 **User Story:** As an analyst who closes the agent, I want
   `server.main()` to be the single teardown owner on every exit path
