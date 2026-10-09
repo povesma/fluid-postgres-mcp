@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-10
+
+### Added
+- `--pre-connect-script` accepts quoted paths and arguments, with
+  shell-style rules on macOS/Linux and Windows command-line rules on
+  Windows (see README "Pre-connect scripts").
+- On Windows, stopping the pre-connect script ends its whole process
+  tree, also when the MCP itself crashes or is killed.
+
+### Changed
+- On macOS/Linux, `--pre-connect-script` values containing `'`, `"`,
+  `\` or non-ASCII whitespace are now split differently. Check such
+  values before upgrading.
+- On macOS/Linux, the script gets `SIGTERM` and 5 s to clean up before
+  `SIGKILL`.
+- The script's stderr now goes to the MCP's stderr.
+- A malformed or whitespace-only `--pre-connect-script` value makes
+  the MCP exit with status 2 at startup.
+
+### Fixed
+- On Windows, the pre-connect script now starts; before, it never ran.
+- The pre-connect script is now stopped on every MCP exit (client
+  disconnect, `SIGTERM`/`SIGINT` including during startup, transport
+  error), not only on a signal.
+- On Python 3.12+, a script whose child process kept stdout open is
+  now seen to exit, so shutdown no longer hangs.
+- A failed first connect no longer leaves a connection pool
+  reconnecting in the background.
+
 ## [0.1.4] - 2026-10-09
 
 ### Fixed
