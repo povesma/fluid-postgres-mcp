@@ -5,9 +5,22 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture
+def stub_pool(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from postgres_mcp import server
+
+    pool = MagicMock()
+    pool.pool_connect = AsyncMock(return_value=None)
+    pool.close = AsyncMock()
+    monkeypatch.setattr(server, "DbConnPool", MagicMock(return_value=pool))
+    return pool
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["stdio", "sse", "streamable-http"])
-async def test_transport_argument_parsing(transport):
+async def test_transport_argument_parsing(transport, stub_pool):
     """Test that all transport options are parsed correctly."""
     from postgres_mcp.server import main
 
@@ -20,7 +33,6 @@ async def test_transport_argument_parsing(transport):
         ]
 
         with (
-            patch("postgres_mcp.server.db_connection.pool_connect", AsyncMock()),
             patch("postgres_mcp.server.mcp.run_stdio_async", AsyncMock()) as mock_stdio,
             patch("postgres_mcp.server.mcp.run_sse_async", AsyncMock()) as mock_sse,
             patch("postgres_mcp.server.mcp.run_streamable_http_async", AsyncMock()) as mock_http,
@@ -45,7 +57,7 @@ async def test_transport_argument_parsing(transport):
 
 
 @pytest.mark.asyncio
-async def test_streamable_http_host_port_arguments():
+async def test_streamable_http_host_port_arguments(stub_pool):
     """Test that streamable-http host and port arguments are applied correctly."""
     from postgres_mcp.server import main
     from postgres_mcp.server import mcp
@@ -61,7 +73,6 @@ async def test_streamable_http_host_port_arguments():
         ]
 
         with (
-            patch("postgres_mcp.server.db_connection.pool_connect", AsyncMock()),
             patch("postgres_mcp.server.mcp.run_streamable_http_async", AsyncMock()),
         ):
             await main()
@@ -74,7 +85,7 @@ async def test_streamable_http_host_port_arguments():
 
 
 @pytest.mark.asyncio
-async def test_sse_host_port_arguments():
+async def test_sse_host_port_arguments(stub_pool):
     """Test that SSE host and port arguments are applied correctly."""
     from postgres_mcp.server import main
     from postgres_mcp.server import mcp
@@ -90,7 +101,6 @@ async def test_sse_host_port_arguments():
         ]
 
         with (
-            patch("postgres_mcp.server.db_connection.pool_connect", AsyncMock()),
             patch("postgres_mcp.server.mcp.run_sse_async", AsyncMock()),
         ):
             await main()
@@ -103,7 +113,7 @@ async def test_sse_host_port_arguments():
 
 
 @pytest.mark.asyncio
-async def test_default_transport_is_stdio():
+async def test_default_transport_is_stdio(stub_pool):
     """Test that the default transport is stdio when not specified."""
     from postgres_mcp.server import main
 
@@ -115,7 +125,6 @@ async def test_default_transport_is_stdio():
         ]
 
         with (
-            patch("postgres_mcp.server.db_connection.pool_connect", AsyncMock()),
             patch("postgres_mcp.server.mcp.run_stdio_async", AsyncMock()) as mock_stdio,
             patch("postgres_mcp.server.mcp.run_sse_async", AsyncMock()) as mock_sse,
             patch("postgres_mcp.server.mcp.run_streamable_http_async", AsyncMock()) as mock_http,
