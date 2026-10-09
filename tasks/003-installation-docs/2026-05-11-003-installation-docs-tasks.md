@@ -117,7 +117,7 @@
       - ✓ Connected`. [live] (2026-05-11)
     [verify: manual-run-user]
 
-- [ ] 6.0 **User Story:** As an operator installing with
+- [X] 6.0 **User Story:** As an operator installing with
   `uvx fluid-postgres-mcp`, I want a fresh install to start so that
   the documented snippets work again after `mcp` 2.x was published
   (hotfix 0.1.4, found 2026-10-09: published 0.1.3 fails at import
@@ -142,14 +142,39 @@
     as their own commit, then the pin + test, then the bump +
     CHANGELOG. Confirm `git diff --quiet` and
     `git diff --staged --quiet` both succeed. [verify: code-only]
-  - [ ] 6.4 Write the hand-written GitHub Release body per the
+  - [X] 6.4 Write the hand-written GitHub Release body per the
     README rule to a scratch file; show it and get the user's
     explicit approval to release 0.1.4 (PyPI upload cannot be
     undone). [verify: manual-run-user]
-  - [ ] 6.5 Precondition: approval from 6.4 recorded in this
+    → user approved the body and the release [live] (2026-10-09)
+  - [X] 6.5 Precondition: approval from 6.4 recorded in this
     session; otherwise stop. Run `scripts/release.sh --version
     0.1.4 --release-body-file <file> --yes` (pushes and uploads),
     then `scripts/release-check.sh 0.1.4`. [verify: manual-run-claude]
-  - [ ] 6.6 Smoke the published package from a clean cache:
+    → script pushed main + tag, then failed at step 5 (gh token had
+      no push access); finished by hand per README steps 5–7 after
+      the user switched gh account; release-check: fully released
+      [live] (2026-10-09)
+  - [X] 6.6 Smoke the published package from a clean cache:
     `uvx --refresh fluid-postgres-mcp@0.1.4 --version` prints
     `fluid-postgres-mcp 0.1.4`. [verify: manual-run-claude]
+    → prints `fluid-postgres-mcp 0.1.4` [live] (2026-10-09)
+
+- [ ] 7.0 **User Story:** As the maintainer, I want the release
+  tooling to report and roll back a partial release correctly so
+  that a failure after the push never leaves a stray tag (found
+  during the 0.1.4 release) [3/0]
+  - [ ] 7.1 `scripts/release.sh`: on a failure after step 4 and
+    before PyPI, also delete the pushed remote tag (or stop and
+    print the exact recovery commands), not only the local tag.
+    Today the rollback leaves `v<X.Y.Z>` on origin.
+    [verify: manual-run-claude]
+  - [ ] 7.2 `scripts/release-check.sh`: check the tag on origin
+    (`git ls-remote --tags origin`), not only the local tag; today
+    it reports MISSING while the remote tag exists.
+    [verify: manual-run-claude]
+  - [ ] 7.3 `scripts/release.sh` preflight: before tagging, check
+    that `.venv/bin/twine` exists, `.env` exists, and the gh token
+    has push access (`gh api repos/<owner>/<repo> --jq
+    .permissions.push`), so these fail before anything is pushed.
+    [verify: manual-run-claude]
