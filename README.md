@@ -446,12 +446,18 @@ Release stays in draft until PyPI succeeds. A release is not done
 until git tag, GitHub Release, and PyPI all agree.
 
 The release flow is automated by [`scripts/release.sh`](./scripts/release.sh).
-The script runs the seven steps below as a single transaction:
-pre-PyPI failures roll back (delete local tag + draft Release);
+The script runs the seven steps below as a single transaction. A
+preflight first checks `.venv/bin/twine`, `.env` with `PYPI_TOKEN`,
+and that the `gh` token can push to the repo, so these fail before
+anything is tagged. Failures before the push roll back (delete local
+tag + draft Release); failures after the push but before PyPI keep
+the pushed tag and print the exact commands to finish by hand;
 post-PyPI failures surface loudly with the exact recovery command.
-[`scripts/release-check.sh`](./scripts/release-check.sh) asserts the
-three-source agreement (tag / GH Release / PyPI) for any version —
-run it any time to catch half-released states.
+Every step logs its elapsed time, and every network call has a time
+limit. [`scripts/release-check.sh`](./scripts/release-check.sh)
+asserts the three-source agreement (tag on origin / published GH
+Release / PyPI) for any version — run it any time to catch
+half-released states.
 
 **Author work** (the script verifies but does not author):
 

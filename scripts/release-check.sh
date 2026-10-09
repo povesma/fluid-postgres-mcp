@@ -29,21 +29,46 @@ else
 fi
 ver="${tag#v}"
 
+# with_timeout SECS CMD... — run CMD, TERM it after SECS seconds
+# (macOS ships no `timeout`).
+with_timeout() {
+    local secs=$1; shift
+    "$@" &
+    local pid=$!
+    (
+        for ((i = 0; i < secs; i++)); do
+            sleep 1
+            kill -0 "$pid" 2>/dev/null || exit 0
+        done
+        echo "release-check.sh: timed out after ${secs}s: $*" >&2
+        kill -TERM "$pid" 2>/dev/null
+    ) &
+    local watcher=$!
+    local rc=0
+    wait "$pid" || rc=$?
+    wait "$watcher" 2>/dev/null || true
+    return "$rc"
+}
+
 echo "Checking release agreement for $tag …"
 
-git_tag=$(git tag -l "$tag")
-gh_tag=$(gh release view "$tag" --json tagName -q .tagName 2>/dev/null || true)
-pypi_ver=$(curl -sfL "https://pypi.org/pypi/${PKG}/${ver}/json" \
+origin_tag=$(with_timeout 30 git ls-remote --tags origin "refs/tags/$tag" \
+    | awk '{print $2}' | sed 's#^refs/tags/##' || true)
+printf "  git tag origin: %s\n" "${origin_tag:-MISSING}"
+local_tag=$(git tag -l "$tag")
+printf "  git tag local : %s\n" "${local_tag:-missing (informational)}"
+gh_state=$(with_timeout 30 gh release view "$tag" --json tagName,isDraft \
+    -q 'if .isDraft then .tagName + " (draft)" else .tagName end' 2>/dev/null || true)
+printf "  GitHub Release: %s\n" "${gh_state:-MISSING}"
+pypi_ver=$(curl -sfL --max-time 30 "https://pypi.org/pypi/${PKG}/${ver}/json" \
     | jq -r .info.version 2>/dev/null || true)
-
-ok=0
-printf "  git tag       : %s\n" "${git_tag:-MISSING}"
-printf "  GitHub Release: %s\n" "${gh_tag:-MISSING}"
 printf "  PyPI version  : %s\n" "${pypi_ver:-MISSING}"
 
-[[ "$git_tag" == "$tag" ]] || ok=1
-[[ "$gh_tag"  == "$tag" ]] || ok=1
-[[ "$pypi_ver" == "$ver" ]] || ok=1
+ok=0
+
+[[ "$origin_tag" == "$tag" ]] || ok=1
+[[ "$gh_state"   == "$tag" ]] || ok=1
+[[ "$pypi_ver"   == "$ver" ]] || ok=1
 
 if [[ $ok -eq 0 ]]; then
     echo "OK: $tag is fully released."

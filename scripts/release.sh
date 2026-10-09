@@ -63,8 +63,31 @@ done
 # ──────────────────────────────────────────────────────────────────
 # helpers
 # ──────────────────────────────────────────────────────────────────
+START_SECONDS=$SECONDS
 die() { echo "release.sh: $*" >&2; exit 1; }
-log() { echo "==> $*"; }
+log() { echo "==> [$((SECONDS - START_SECONDS))s] $*"; }
+
+# with_timeout SECS CMD... — run CMD, TERM it after SECS seconds.
+# macOS ships no `timeout`; the watcher polls once a second so it
+# exits promptly when CMD finishes first.
+with_timeout() {
+    local secs=$1; shift
+    "$@" &
+    local pid=$!
+    (
+        for ((i = 0; i < secs; i++)); do
+            sleep 1
+            kill -0 "$pid" 2>/dev/null || exit 0
+        done
+        echo "release.sh: timed out after ${secs}s: $*" >&2
+        kill -TERM "$pid" 2>/dev/null
+    ) &
+    local watcher=$!
+    local rc=0
+    wait "$pid" || rc=$?
+    wait "$watcher" 2>/dev/null || true
+    return "$rc"
+}
 
 confirm() {
     local prompt="$1"
@@ -101,10 +124,10 @@ cleanup_draft() {
     # Idempotent: deletes the draft GH Release for this version if
     # it exists AND is still in draft. Never touches a published one.
     local tag="v$VERSION" state
-    state=$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null || echo "")
+    state=$(with_timeout 30 gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null || echo "")
     if [[ "$state" == "true" ]]; then
         log "cleanup: deleting draft GH Release $tag"
-        gh release delete "$tag" -y >/dev/null 2>&1 || true
+        with_timeout 30 gh release delete "$tag" -y >/dev/null 2>&1 || true
     fi
 }
 
@@ -116,6 +139,17 @@ log "step 0: validate inputs and working tree"
 for cmd in git gh uvx tar curl jq awk sed; do
     command -v "$cmd" >/dev/null 2>&1 || die "missing: $cmd"
 done
+
+# Preflight: everything steps 3-6 need, checked before anything is
+# tagged or pushed. The token is read only inside a subshell.
+[[ -x .venv/bin/twine ]] || die "missing .venv/bin/twine (uv pip install twine)"
+[[ -f .env ]] || die ".env not found (needs PYPI_TOKEN)"
+( set -a; source .env; set +a; [[ -n "${PYPI_TOKEN:-}" ]] ) || \
+    die "PYPI_TOKEN not set in .env"
+log "  preflight: checking gh push access"
+can_push=$(with_timeout 30 gh api 'repos/{owner}/{repo}' --jq .permissions.push 2>/dev/null || true)
+[[ "$can_push" == "true" ]] || \
+    die "gh token cannot push to this repo (gh api 'repos/{owner}/{repo}' --jq .permissions); switch gh account"
 
 if [[ -z "$VERSION" ]]; then
     [[ ! -t 0 ]] && die "missing --version"
@@ -193,20 +227,41 @@ fi
 git tag -a "$TAG" -m "$TAG_MSG"
 
 # From here on, step 2-5 failures must clean up the local tag and
-# any draft GH Release. Step 6+ is the point of no return.
+# any draft GH Release. Step 6+ is the point of no return. Once the
+# tag is on origin (step 4), the local tag is kept so local and
+# remote agree, and the exact commands to finish by hand are printed.
 PRE_PYPI=1
-trap 'rc=$?; if [[ $PRE_PYPI -eq 1 ]]; then
-        echo "release.sh: pre-PyPI failure; cleaning up local tag and draft" >&2
-        git tag -d "'"$TAG"'" >/dev/null 2>&1 || true
-        cleanup_draft
-      fi; exit $rc' ERR
+TAG_PUSHED=0
+on_pre_pypi_failure() {
+    local rc=$1
+    [[ $PRE_PYPI -eq 1 ]] || exit "$rc"
+    cleanup_draft
+    if [[ $TAG_PUSHED -eq 0 ]]; then
+        echo "release.sh: pre-PyPI failure; deleted local tag $TAG and any draft" >&2
+        git tag -d "$TAG" >/dev/null 2>&1 || true
+        exit "$rc"
+    fi
+    cat >&2 <<EOF
+release.sh: pre-PyPI failure AFTER $TAG and the commit were pushed.
+Nothing is on PyPI. Fix the cause above, then finish by hand:
+  gh release create $TAG --draft -t $TAG -F $RELEASE_BODY_FILE
+  set -a; source .env; set +a
+  .venv/bin/twine upload -u __token__ -p "\$PYPI_TOKEN" dist/*
+  gh release edit $TAG --draft=false
+  scripts/release-check.sh $TAG
+Or abandon $TAG: git push origin :refs/tags/$TAG && git tag -d $TAG
+EOF
+    exit "$rc"
+}
+trap 'on_pre_pypi_failure $?' ERR
 
 # ──────────────────────────────────────────────────────────────────
 # step 2: clean and build
 # ──────────────────────────────────────────────────────────────────
 log "step 2: clean + build"
 rm -rf dist/ build/ ./*.egg-info
-uvx --from build pyproject-build >/dev/null
+with_timeout 300 uvx --from build pyproject-build >/dev/null
+log "  build done"
 
 # ──────────────────────────────────────────────────────────────────
 # step 3: inspect sdist + twine check
@@ -219,21 +274,23 @@ for forbidden in '\.env' '\.claude' '^tasks/'; do
         die "sdist leak detected: $forbidden — fix the allowlist"
     fi
 done
-.venv/bin/twine check dist/*
+with_timeout 60 .venv/bin/twine check dist/*
 
 # ──────────────────────────────────────────────────────────────────
 # step 4: push commit and tag
 # ──────────────────────────────────────────────────────────────────
 log "step 4: push commit and tag"
-git push
-git push origin "$TAG"
+with_timeout 60 git push
+log "  pushed branch; pushing tag"
+with_timeout 60 git push origin "$TAG"
+TAG_PUSHED=1
 
 # ──────────────────────────────────────────────────────────────────
 # step 5: draft GH Release
 # ──────────────────────────────────────────────────────────────────
 log "step 5: draft GitHub Release"
-gh release create "$TAG" --draft -t "$TAG" -F "$RELEASE_BODY_FILE" >/dev/null
-log "  draft created — review at: $(gh release view "$TAG" --json url -q .url)"
+with_timeout 60 gh release create "$TAG" --draft -t "$TAG" -F "$RELEASE_BODY_FILE" >/dev/null
+log "  draft created — review at: $(with_timeout 30 gh release view "$TAG" --json url -q .url)"
 
 confirm "Draft looks good, proceed to PyPI upload (POINT OF NO RETURN)?" || \
     die "aborted before PyPI; draft retained, tag pushed"
@@ -251,7 +308,7 @@ set -a; source .env; set +a
 [[ -n "${PYPI_TOKEN:-}" ]] || die "step 6: PYPI_TOKEN not set after sourcing .env"
 
 upload_out=$(mktemp)
-if ! .venv/bin/twine upload -u __token__ -p "$PYPI_TOKEN" dist/* 2> >(sed 's/pypi-[A-Za-z0-9_-]*/pypi-<REDACTED>/g' >&2) > "$upload_out"; then
+if ! with_timeout 300 .venv/bin/twine upload -u __token__ -p "$PYPI_TOKEN" dist/* 2> >(sed 's/pypi-[A-Za-z0-9_-]*/pypi-<REDACTED>/g' >&2) > "$upload_out"; then
     # Distinguish "PyPI rejected upload" (safe to retry) from "PyPI
     # accepted then errored mid-flight" (catastrophe). twine prints
     # "View at:" only on success of at least one file.
@@ -272,12 +329,13 @@ rm -f "$upload_out"
 # step 7: flip GH Release and smoke
 # ──────────────────────────────────────────────────────────────────
 log "step 7: flip GH Release to published"
-gh release edit "$TAG" --draft=false >/dev/null
+with_timeout 60 gh release edit "$TAG" --draft=false >/dev/null
 
 log "step 7: smoke uvx fluid-postgres-mcp --version"
 # PyPI's CDN can lag a few seconds after upload.
 for attempt in 1 2 3 4 5; do
-    if smoke_ver=$(uvx --refresh "$PKG" --version 2>/dev/null) && \
+    log "  smoke attempt $attempt/5"
+    if smoke_ver=$(with_timeout 120 uvx --refresh "$PKG" --version 2>/dev/null) && \
        [[ "$smoke_ver" == "$PKG $VERSION" ]]; then
         break
     fi

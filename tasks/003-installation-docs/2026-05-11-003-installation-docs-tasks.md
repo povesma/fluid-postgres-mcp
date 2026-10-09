@@ -163,18 +163,40 @@
 - [ ] 7.0 **User Story:** As the maintainer, I want the release
   tooling to report and roll back a partial release correctly so
   that a failure after the push never leaves a stray tag (found
-  during the 0.1.4 release) [3/0]
-  - [ ] 7.1 `scripts/release.sh`: on a failure after step 4 and
+  during the 0.1.4 release) [4/0]
+  - [X] 7.1 `scripts/release.sh`: on a failure after step 4 and
     before PyPI, also delete the pushed remote tag (or stop and
     print the exact recovery commands), not only the local tag.
     Today the rollback leaves `v<X.Y.Z>` on origin.
     [verify: manual-run-claude]
-  - [ ] 7.2 `scripts/release-check.sh`: check the tag on origin
+    → chose "keep tag + print recovery commands" (no automatic
+      deletion of a published tag); in a throwaway clone with a local
+      bare origin: step-5 failure kept the tag locally and on origin
+      and printed the commands; step-3 failure deleted the local tag
+      [live] (2026-10-09)
+  - [X] 7.2 `scripts/release-check.sh`: check the tag on origin
     (`git ls-remote --tags origin`), not only the local tag; today
     it reports MISSING while the remote tag exists.
     [verify: manual-run-claude]
-  - [ ] 7.3 `scripts/release.sh` preflight: before tagging, check
+    → origin tag decides, local shown as informational; a draft
+      Release now fails the check; real 0.1.4 → OK; clone with the
+      tag only on origin → origin found, FAIL on the other sources
+      [live] (2026-10-09)
+  - [~] 7.3 `scripts/release.sh` preflight: before tagging, check
     that `.venv/bin/twine` exists, `.env` exists, and the gh token
     has push access (`gh api repos/<owner>/<repo> --jq
     .permissions.push`), so these fail before anything is pushed.
     [verify: manual-run-claude]
+    → negative case live: gh token without push access stopped the
+      script at step 0, before tag/push (2026-10-09); positive case
+      pending a gh account with push access
+  - [X] 7.4 `scripts/release.sh` and `scripts/release-check.sh`
+    follow the user's "no silent waits" rule: every step logs one
+    line with elapsed time (no step output sent to `/dev/null`
+    without a log line), and every network call (`git push`, `gh`,
+    `curl`, `twine`, `uvx`) has a time limit, so a stuck release is
+    visible at once. [verify: manual-run-claude]
+    → `with_timeout` helper (no `timeout` on macOS); log lines carry
+      elapsed seconds; unreachable origin → `git ls-remote` stopped
+      at 30s, check finished in 32s; real 0.1.4 check OK; README
+      release section updated [live] (2026-10-09)
