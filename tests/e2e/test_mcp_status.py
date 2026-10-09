@@ -11,8 +11,8 @@ from mcp_client_fixtures import extract_text
 
 @pytest.mark.asyncio
 class TestStatusConnected:
-    async def test_shows_connected_state(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_shows_connected_state(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             result = await call_tool(session, "status", {})
@@ -21,8 +21,8 @@ class TestStatusConnected:
             parsed = eval(text)
             assert parsed["state"] == "connected"
 
-    async def test_events_include_connect(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_events_include_connect(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             result = await call_tool(session, "status", {"events": 10})
@@ -33,8 +33,8 @@ class TestStatusConnected:
 
 @pytest.mark.asyncio
 class TestStatusAfterQueries:
-    async def test_state_is_connected_after_queries(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_state_is_connected_after_queries(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             for i in range(5):
@@ -47,8 +47,8 @@ class TestStatusAfterQueries:
 
 @pytest.mark.asyncio
 class TestStatusAfterError:
-    async def test_error_events_after_bad_query(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_error_events_after_bad_query(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             await call_tool(session, "execute_sql", {
@@ -63,8 +63,8 @@ class TestStatusAfterError:
 
 @pytest.mark.asyncio
 class TestStatusMetadata:
-    async def test_metadata_includes_reconnect_count(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_metadata_includes_reconnect_count(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             result = await call_tool(session, "status", {"metadata": True})
@@ -76,8 +76,8 @@ class TestStatusMetadata:
 
 @pytest.mark.asyncio
 class TestStatusNoCredentials:
-    async def test_no_password_in_status_output(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_no_password_in_status_output(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             await call_tool(session, "execute_sql", {"sql": "SELECT 1"})
@@ -94,9 +94,9 @@ class TestStatusNoCredentials:
 
 @pytest.mark.asyncio
 class TestStatusAfterReconnect:
-    async def test_reconnect_events_visible(self, k8s_pg_connection_string):
+    async def test_reconnect_events_visible(self, pg_connection_string):
         """Force pool invalidation via pg_terminate_backend, verify status shows reconnect."""
-        connection_string, _ = k8s_pg_connection_string
+        connection_string, _ = pg_connection_string
 
         import asyncio
 

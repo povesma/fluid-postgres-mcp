@@ -74,8 +74,8 @@ class TestGracefulShutdown:
             proc.wait()
             pytest.fail("Server did not exit within 10s after SIGTERM")
 
-    async def test_server_responds_then_shuts_down(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_server_responds_then_shuts_down(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             result = await call_tool(session, "execute_sql", {"sql": "SELECT 'alive' AS s"})

@@ -14,8 +14,8 @@ from postgres_mcp.sql.sql_driver import SqlDriver
 
 
 @pytest_asyncio.fixture
-async def timeout_driver(k8s_pg_connection_string) -> SqlDriver:
-    connection_string, _version = k8s_pg_connection_string
+async def timeout_driver(pg_connection_string) -> SqlDriver:
+    connection_string, _version = pg_connection_string
     pool = DbConnPool(
         connection_url=connection_string,
         reconnect_config=ReconnectConfig(initial_delay=0.5, max_delay=5.0, max_attempts=5),

@@ -15,8 +15,8 @@ from mcp_client_fixtures import extract_text
 
 @pytest.mark.asyncio
 class TestPreConnectScriptArg:
-    async def test_marker_file_created_on_boot(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_marker_file_created_on_boot(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".marker") as marker:
             marker_path = marker.name
@@ -46,8 +46,8 @@ class TestPreConnectScriptArg:
 
 @pytest.mark.asyncio
 class TestDefaultTimeoutArg:
-    async def test_server_default_timeout_cancels_slow_query(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_server_default_timeout_cancels_slow_query(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(
             connection_string,
@@ -60,8 +60,8 @@ class TestDefaultTimeoutArg:
                 f"Expected timeout error message, got: {text}"
             )
 
-    async def test_fast_query_succeeds_within_timeout(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_fast_query_succeeds_within_timeout(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(
             connection_string,
@@ -74,8 +74,8 @@ class TestDefaultTimeoutArg:
 
 @pytest.mark.asyncio
 class TestOutputDirArg:
-    async def test_file_created_in_output_dir(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_file_created_in_output_dir(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         with tempfile.TemporaryDirectory() as tmpdir:
             async for session in create_mcp_session(
@@ -99,8 +99,8 @@ class TestOutputDirArg:
 
 @pytest.mark.asyncio
 class TestEventBufferSizeArg:
-    async def test_buffer_limits_events(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_buffer_limits_events(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(
             connection_string,

@@ -13,8 +13,8 @@ from postgres_mcp.sql.sql_driver import SqlDriver
 
 @pytest.mark.asyncio
 class TestFileExport500K:
-    async def test_csv_file_valid_and_row_count_correct(self, k8s_pg_with_test_data: SqlDriver):
-        driver = k8s_pg_with_test_data
+    async def test_csv_file_valid_and_row_count_correct(self, pg_with_test_data: SqlDriver):
+        driver = pg_with_test_data
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
             path = f.name
@@ -52,8 +52,8 @@ class TestFileExport500K:
             if os.path.exists(path):
                 os.unlink(path)
 
-    async def test_file_size_reasonable(self, k8s_pg_with_test_data: SqlDriver):
-        driver = k8s_pg_with_test_data
+    async def test_file_size_reasonable(self, pg_with_test_data: SqlDriver):
+        driver = pg_with_test_data
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
             path = f.name
@@ -69,8 +69,8 @@ class TestFileExport500K:
             if os.path.exists(path):
                 os.unlink(path)
 
-    async def test_progress_callback_invoked(self, k8s_pg_with_test_data: SqlDriver):
-        driver = k8s_pg_with_test_data
+    async def test_progress_callback_invoked(self, pg_with_test_data: SqlDriver):
+        driver = pg_with_test_data
         progress_calls: list[dict] = []
 
         def on_progress(rows: int, bytes_written: int, elapsed: float) -> None:
@@ -93,8 +93,8 @@ class TestFileExport500K:
             if os.path.exists(path):
                 os.unlink(path)
 
-    async def test_empty_table_produces_header_only(self, k8s_sql_driver: SqlDriver):
-        driver = k8s_sql_driver
+    async def test_empty_table_produces_header_only(self, pg_sql_driver: SqlDriver):
+        driver = pg_sql_driver
 
         await driver.execute_query("CREATE TABLE IF NOT EXISTS test_empty (id int, name text)")
         await driver.execute_query("TRUNCATE test_empty")

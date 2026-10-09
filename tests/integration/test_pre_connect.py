@@ -17,8 +17,8 @@ from postgres_mcp.sql.sql_driver import SqlDriver
 
 @pytest.mark.asyncio
 class TestPreConnectHookIntegration:
-    async def test_hook_runs_before_connect(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_hook_runs_before_connect(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".marker") as marker:
             marker_path = marker.name
@@ -49,8 +49,8 @@ class TestPreConnectHookIntegration:
                 if os.path.exists(p):
                     os.unlink(p)
 
-    async def test_hook_runs_on_reconnect(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_hook_runs_on_reconnect(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".counter", mode="w") as counter_file:
             counter_file.write("0")
@@ -94,8 +94,8 @@ class TestPreConnectHookIntegration:
                 if os.path.exists(p):
                     os.unlink(p)
 
-    async def test_failed_hook_prevents_connect(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_failed_hook_prevents_connect(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".sh", mode="w") as script:
             script.write("#!/bin/sh\nexit 1\n")
@@ -115,8 +115,8 @@ class TestPreConnectHookIntegration:
         finally:
             os.unlink(script_path)
 
-    async def test_no_hook_configured_is_noop(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_no_hook_configured_is_noop(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         pool = DbConnPool(
             connection_url=connection_string,

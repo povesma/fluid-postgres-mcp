@@ -42,10 +42,10 @@ def _wrong_url() -> str:
 
 
 @pytest.mark.asyncio
-async def test_long_running_script_db_url_override_succeeds(k8s_pg_connection_string):
+async def test_long_running_script_db_url_override_succeeds(pg_connection_string):
     """Smoke: launch MCP with a deliberately wrong --database-url, fixture
     script emits the real URL via [MCP] DB_URL, SELECT 1 succeeds."""
-    real_url, _ = k8s_pg_connection_string
+    real_url, _ = pg_connection_string
 
     extra = [
         "--pre-connect-script",
@@ -63,10 +63,10 @@ async def test_long_running_script_db_url_override_succeeds(k8s_pg_connection_st
 
 
 @pytest.mark.asyncio
-async def test_script_exit_marks_connection_invalid_within_one_second(k8s_pg_connection_string):
+async def test_script_exit_marks_connection_invalid_within_one_second(pg_connection_string):
     """Kill the script after the MCP is connected; the status tool should
     report invalid within ~1s of the kill (E2E budget includes tool round-trips)."""
-    real_url, _ = k8s_pg_connection_string
+    real_url, _ = pg_connection_string
 
     extra = [
         "--pre-connect-script",
@@ -111,11 +111,11 @@ async def test_script_exit_marks_connection_invalid_within_one_second(k8s_pg_con
 
 
 @pytest.mark.asyncio
-async def test_url_rotation_across_script_respawn(tmp_path, k8s_pg_connection_string):
+async def test_url_rotation_across_script_respawn(tmp_path, pg_connection_string):
     """The fixture is wrapped so its emitted DB_URL is read from a file the
     test mutates between respawns. After kill+respawn, the second pool is
     created with the rotated URL and SELECT continues to succeed."""
-    real_url, _ = k8s_pg_connection_string
+    real_url, _ = pg_connection_string
 
     url_file = tmp_path / "current_url"
     url_file.write_text(real_url)
@@ -188,12 +188,12 @@ async def test_url_rotation_across_script_respawn(tmp_path, k8s_pg_connection_st
 
 
 @pytest.mark.asyncio
-async def test_script_is_sole_url_source_waiting_then_connected(tmp_path, k8s_pg_connection_string):
+async def test_script_is_sole_url_source_waiting_then_connected(tmp_path, pg_connection_string):
     """FR-3 smoke: register MCP with NO DATABASE_URI / positional URL, only
     --pre-connect-script. Script delays [MCP] DB_URL by ~2s. The server must
     start in WAITING_FOR_URL, then transition to CONNECTED once DB_URL is
     emitted, with `status` reflecting the final CONNECTED state."""
-    real_url, _ = k8s_pg_connection_string
+    real_url, _ = pg_connection_string
 
     delayed_script = tmp_path / "delayed.sh"
     delayed_script.write_text(
@@ -240,11 +240,11 @@ async def test_script_is_sole_url_source_waiting_then_connected(tmp_path, k8s_pg
 
 
 @pytest.mark.asyncio
-async def test_malformed_db_url_falls_back_to_configured_url(tmp_path, k8s_pg_connection_string):
+async def test_malformed_db_url_falls_back_to_configured_url(tmp_path, pg_connection_string):
     """Fixture emits a malformed [MCP] DB_URL line first, then a valid
     [MCP] READY_TO_CONNECT. MCP must fall back to its configured URL,
     record a warning event, and connect successfully."""
-    real_url, _ = k8s_pg_connection_string
+    real_url, _ = pg_connection_string
 
     bad_protocol_script = tmp_path / "malformed.sh"
     bad_protocol_script.write_text(

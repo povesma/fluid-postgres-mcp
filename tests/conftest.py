@@ -4,7 +4,6 @@ from typing import Generator
 import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
-from k8s_fixtures import create_k8s_postgres
 from utils import create_postgres_container
 
 from postgres_mcp.config import ReconnectConfig
@@ -35,13 +34,13 @@ def reset_pg_version_cache():
 
 
 @pytest.fixture(scope="session")
-def k8s_pg_connection_string() -> Generator[tuple[str, str], None, None]:
-    yield from create_k8s_postgres()
+def pg_connection_string() -> Generator[tuple[str, str], None, None]:
+    yield from create_postgres_container("postgres:16")
 
 
 @pytest_asyncio.fixture
-async def k8s_sql_driver(k8s_pg_connection_string) -> SqlDriver:
-    connection_string, _version = k8s_pg_connection_string
+async def pg_sql_driver(pg_connection_string) -> SqlDriver:
+    connection_string, _version = pg_connection_string
     pool = DbConnPool(
         connection_url=connection_string,
         reconnect_config=ReconnectConfig(initial_delay=0.5, max_delay=5.0),
@@ -53,16 +52,16 @@ async def k8s_sql_driver(k8s_pg_connection_string) -> SqlDriver:
 
 
 @pytest_asyncio.fixture
-async def k8s_pg_with_test_data(k8s_sql_driver) -> SqlDriver:
-    await k8s_sql_driver.execute_query(
+async def pg_with_test_data(pg_sql_driver) -> SqlDriver:
+    await pg_sql_driver.execute_query(
         "CREATE TABLE IF NOT EXISTS test_large (id int, value text, amount numeric(12,2))"
     )
-    await k8s_sql_driver.execute_query(
+    await pg_sql_driver.execute_query(
         "TRUNCATE test_large"
     )
-    await k8s_sql_driver.execute_query(
+    await pg_sql_driver.execute_query(
         "INSERT INTO test_large SELECT g, 'row_' || g, (random() * 10000)::numeric(12,2) "
         "FROM generate_series(1, 500000) g"
     )
-    yield k8s_sql_driver
-    await k8s_sql_driver.execute_query("DROP TABLE IF EXISTS test_large")
+    yield pg_sql_driver
+    await pg_sql_driver.execute_query("DROP TABLE IF EXISTS test_large")

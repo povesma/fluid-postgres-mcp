@@ -17,11 +17,11 @@ from postgres_mcp.sql.sql_driver import SqlDriver
 
 
 @pytest_asyncio.fixture
-async def status_env(k8s_pg_connection_string):
+async def status_env(pg_connection_string):
     """Set up server globals with a real k8s connection and fresh EventStore."""
     import postgres_mcp.server as srv
 
-    connection_string, _ = k8s_pg_connection_string
+    connection_string, _ = pg_connection_string
     original_db = srv.db_connection
     original_es = srv.event_store
 
@@ -78,9 +78,9 @@ class TestStatusToolIntegration:
         event_msgs = [e["message"] for e in parsed.get("events", [])]
         assert any("Connected" in m for m in event_msgs)
 
-    async def test_metadata_with_reconnect_count(self, status_env, k8s_pg_connection_string):
+    async def test_metadata_with_reconnect_count(self, status_env, pg_connection_string):
         pool, store = status_env
-        connection_string, _ = k8s_pg_connection_string
+        connection_string, _ = pg_connection_string
         from postgres_mcp.server import status
 
         import asyncio
@@ -141,10 +141,10 @@ class TestStatusToolIntegration:
         text = result[0].text
         assert "testpass" not in text
 
-    async def test_full_sequence(self, status_env, k8s_pg_connection_string):
+    async def test_full_sequence(self, status_env, pg_connection_string):
         """Run queries, force a drop, reconnect, then verify status reflects the full history."""
         pool, store = status_env
-        connection_string, _ = k8s_pg_connection_string
+        connection_string, _ = pg_connection_string
         from postgres_mcp.server import status
 
         import asyncio

@@ -15,12 +15,12 @@ from postgres_mcp.sql.sql_driver import SqlDriver
 
 
 @pytest_asyncio.fixture
-async def make_driver(k8s_pg_connection_string):
+async def make_driver(pg_connection_string):
     """Factory that creates a fresh driver per test to avoid shared-state issues."""
     drivers = []
 
     async def _make(initial_delay: float = 0.5, max_delay: float = 5.0, max_attempts: int = 10) -> SqlDriver:
-        connection_string, _version = k8s_pg_connection_string
+        connection_string, _version = pg_connection_string
         pool = DbConnPool(
             connection_url=connection_string,
             reconnect_config=ReconnectConfig(
@@ -79,8 +79,8 @@ async def _force_pool_error(driver: SqlDriver, connection_string: str) -> None:
 
 @pytest.mark.asyncio
 class TestReconnectAfterTerminate:
-    async def test_query_after_terminate_triggers_reconnect(self, make_driver, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_query_after_terminate_triggers_reconnect(self, make_driver, pg_connection_string):
+        connection_string, _ = pg_connection_string
         driver = await make_driver()
         pool: DbConnPool = driver.conn
 
@@ -95,8 +95,8 @@ class TestReconnectAfterTerminate:
         assert pool.state == ConnState.CONNECTED
         assert pool.reconnect_count >= 1
 
-    async def test_reconnect_count_increments(self, make_driver, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_reconnect_count_increments(self, make_driver, pg_connection_string):
+        connection_string, _ = pg_connection_string
         driver = await make_driver()
         pool: DbConnPool = driver.conn
 
@@ -108,8 +108,8 @@ class TestReconnectAfterTerminate:
 
         assert pool.reconnect_count >= 3
 
-    async def test_data_integrity_after_reconnect(self, make_driver, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_data_integrity_after_reconnect(self, make_driver, pg_connection_string):
+        connection_string, _ = pg_connection_string
         driver = await make_driver()
 
         await driver.execute_query(
@@ -134,9 +134,9 @@ class TestReconnectAfterTerminate:
 
         await driver.execute_query("DROP TABLE IF EXISTS test_reconnect_data")
 
-    async def test_pool_survives_single_backend_termination(self, make_driver, k8s_pg_connection_string):
+    async def test_pool_survives_single_backend_termination(self, make_driver, pg_connection_string):
         """Pool transparently replaces a terminated connection — queries keep working."""
-        connection_string, _ = k8s_pg_connection_string
+        connection_string, _ = pg_connection_string
         driver = await make_driver()
 
         pid = await _get_backend_pid(driver)

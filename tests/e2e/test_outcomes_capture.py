@@ -131,8 +131,8 @@ async def test_capture_bad_url_startup():
 
 
 @pytest.mark.asyncio
-async def test_capture_malformed_db_url(tmp_path, k8s_pg_connection_string):
-    real_url, _ = k8s_pg_connection_string
+async def test_capture_malformed_db_url(tmp_path, pg_connection_string):
+    real_url, _ = pg_connection_string
     bad = tmp_path / "malformed.sh"
     bad.write_text(dedent("""\
         #!/usr/bin/env bash
@@ -163,8 +163,8 @@ async def test_capture_malformed_db_url(tmp_path, k8s_pg_connection_string):
 
 
 @pytest.mark.asyncio
-async def test_capture_script_kill(k8s_pg_connection_string):
-    real_url, _ = k8s_pg_connection_string
+async def test_capture_script_kill(pg_connection_string):
+    real_url, _ = pg_connection_string
     extra = ["--pre-connect-script", str(PASSTHROUGH), "--hook-timeout", "10.0"]
     env = {"LONG_RUNNING_URL": real_url}
 
@@ -219,10 +219,10 @@ async def test_capture_script_kill(k8s_pg_connection_string):
 
 
 @pytest.mark.asyncio
-async def test_capture_backend_terminate(k8s_pg_connection_string):
+async def test_capture_backend_terminate(pg_connection_string):
     """pg_terminate_backend then query — measure recovery."""
     import psycopg
-    real_url, _ = k8s_pg_connection_string
+    real_url, _ = pg_connection_string
 
     async with McpSession(real_url) as session:
         r = await call_tool(session, "execute_sql", {"sql": "SELECT pg_backend_pid() AS pid"})

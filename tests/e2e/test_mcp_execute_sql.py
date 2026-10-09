@@ -14,8 +14,8 @@ from mcp_client_fixtures import extract_text
 
 @pytest.mark.asyncio
 class TestInlineMode:
-    async def test_returns_rows(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_returns_rows(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             result = await call_tool(session, "execute_sql", {
@@ -26,8 +26,8 @@ class TestInlineMode:
             assert "row_1" in text
             assert "row_5" in text
 
-    async def test_no_results_query(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_no_results_query(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             result = await call_tool(session, "execute_sql", {
@@ -35,8 +35,8 @@ class TestInlineMode:
             })
             assert not result.isError
 
-    async def test_error_sets_isError(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_error_sets_isError(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             result = await call_tool(session, "execute_sql", {
@@ -49,8 +49,8 @@ class TestInlineMode:
 
 @pytest.mark.asyncio
 class TestFileMode:
-    async def test_creates_csv_with_metadata(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_creates_csv_with_metadata(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = os.path.join(tmpdir, "output.csv")
@@ -73,8 +73,8 @@ class TestFileMode:
                 assert lines[0].strip() == "id,name"
                 assert len(lines) == 101
 
-    async def test_file_mode_no_inline_data(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_file_mode_no_inline_data(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = os.path.join(tmpdir, "no_inline.csv")
@@ -95,8 +95,8 @@ class TestFileMode:
 
 @pytest.mark.asyncio
 class TestFileInlineMode:
-    async def test_returns_both_file_and_data(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_returns_both_file_and_data(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = os.path.join(tmpdir, "both.csv")
@@ -122,8 +122,8 @@ class TestFileInlineMode:
 
 @pytest.mark.asyncio
 class TestPerQueryTimeout:
-    async def test_per_query_timeout_overrides_default(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_per_query_timeout_overrides_default(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(
             connection_string,
@@ -137,8 +137,8 @@ class TestPerQueryTimeout:
             text = extract_text(result)
             assert "timeout" in text.lower() or "cancel" in text.lower()
 
-    async def test_connection_usable_after_error(self, k8s_pg_connection_string):
-        connection_string, _ = k8s_pg_connection_string
+    async def test_connection_usable_after_error(self, pg_connection_string):
+        connection_string, _ = pg_connection_string
 
         async for session in create_mcp_session(connection_string):
             await call_tool(session, "execute_sql", {

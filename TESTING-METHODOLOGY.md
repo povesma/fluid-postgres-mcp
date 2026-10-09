@@ -180,7 +180,7 @@ re-verify against real infrastructure:
 | Layer | Faults run as | When we run it |
 |---|---|---|
 | **Unit** (210 tests, ~3 min) | In-process fakes simulate subprocess output, exits, timeouts | Every commit |
-| **Integration** (24 tests, ~3 min) | Real PostgreSQL via Kubernetes; we issue `pg_terminate_backend` and reconnect | Every commit |
+| **Integration** (24 tests, ~3 min) | Real PostgreSQL in a local Docker container; we issue `pg_terminate_backend` and reconnect | Every commit |
 | **E2E local** (31 tests, ~5 min) | Real `fluid-postgres-mcp` subprocess; we send real `SIGTERM` and `SIGKILL` to script processes; we point the MCP at a deliberately broken URL | Every commit |
 | **E2E live AWS** (9 tests, ~2 min) | Real AWS SSM tunnels, real EC2-hosted PostgreSQL, real `aws ssm send-command "docker compose stop postgres"` | On demand (needs `aws login`) |
 

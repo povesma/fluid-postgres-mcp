@@ -2,7 +2,7 @@
 
 ```bash
 pytest tests/unit/         # in-process, fast
-pytest tests/integration/  # needs Docker + a kubectl-accessible cluster
+pytest tests/integration/  # needs a running local Docker
 pytest tests/e2e/          # boots the MCP subprocess; SSM tests need `aws login`
 ```
 

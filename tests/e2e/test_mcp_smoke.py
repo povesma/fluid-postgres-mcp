@@ -10,8 +10,8 @@ from mcp_client_fixtures import extract_text
 
 
 @pytest.mark.asyncio
-async def test_server_boots_and_lists_tools(k8s_pg_connection_string):
-    connection_string, _ = k8s_pg_connection_string
+async def test_server_boots_and_lists_tools(pg_connection_string):
+    connection_string, _ = pg_connection_string
 
     async for session in create_mcp_session(connection_string):
         tools = await session.list_tools()
@@ -23,8 +23,8 @@ async def test_server_boots_and_lists_tools(k8s_pg_connection_string):
 
 
 @pytest.mark.asyncio
-async def test_execute_sql_inline(k8s_pg_connection_string):
-    connection_string, _ = k8s_pg_connection_string
+async def test_execute_sql_inline(pg_connection_string):
+    connection_string, _ = pg_connection_string
 
     async for session in create_mcp_session(connection_string):
         result = await call_tool(session, "execute_sql", {"sql": "SELECT 42 AS answer"})
