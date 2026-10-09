@@ -33,6 +33,7 @@ from .sql import SafeSqlDriver
 from .sql import SqlDriver
 from .sql import check_hypopg_installation_status
 from .sql import obfuscate_password
+from .sql.connection_script import split_command
 from .top_queries import TopQueriesCalc
 
 mcp = FastMCP("fluid-postgres-mcp")
@@ -697,7 +698,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reconnect-initial-delay", type=float, default=None, help="Initial reconnect backoff in seconds")
     parser.add_argument("--reconnect-max-delay", type=float, default=None, help="Max reconnect backoff in seconds")
     parser.add_argument("--reconnect-max-attempts", type=int, default=None, help="Max reconnect attempts (0=unlimited)")
-    parser.add_argument("--pre-connect-script", type=str, default=None, help="Script to run before connecting")
+    parser.add_argument(
+        "--pre-connect-script",
+        type=str,
+        default=None,
+        help=(
+            "Command to run before connecting (env: PGMCP_PRE_CONNECT_SCRIPT). Quote paths with spaces. "
+            'POSIX: shell-style quotes and backslash escapes, e.g. "/opt/my tunnels/t.sh" db. '
+            "Windows: double quotes only; a backslash is always literal, "
+            'e.g. uv run "C:\\Users\\Jane Doe\\t.py" db.'
+        ),
+    )
     parser.add_argument("--hook-timeout", type=float, default=None, help="Pre-connect hook timeout in seconds")
     parser.add_argument("--event-buffer-size", type=int, default=None, help="Ring buffer size per event category")
     parser.add_argument("--output-dir", type=str, default=None, help="Default directory for file output")
@@ -711,6 +722,11 @@ async def main():
     from .config import parse_config
     global server_config, db_connection, event_store
     server_config = parse_config(args)
+    if server_config.reconnect.pre_connect_script is not None:
+        try:
+            split_command(server_config.reconnect.pre_connect_script)
+        except ValueError as exc:
+            parser.error(f"invalid --pre-connect-script / PGMCP_PRE_CONNECT_SCRIPT: {exc}")
     event_store = EventStore(buffer_size=server_config.event_buffer_size)
     db_connection = DbConnPool(
         reconnect_config=server_config.reconnect,

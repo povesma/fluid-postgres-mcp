@@ -544,11 +544,11 @@ Amendment 2026-10-08 (stories 9.0–14.0):
 PRD user stories 7–10, FR-9–FR-12, NFR-6; tech-design sections
 marked "amendment".
 
-- [ ] 9.0 **User Story:** As an analyst whose script or profile path
+- [X] 9.0 **User Story:** As an analyst whose script or profile path
   contains a space, I want `--pre-connect-script` to honour quotes
   (POSIX and Windows rules) and reject malformed values at startup
   so that the MCP starts the script I named [7/0]
-  - [ ] 9.1 Create `tests/unit/sql/test_split_command.py` with
+  - [X] 9.1 Create `tests/unit/sql/test_split_command.py` with
     table-driven tests calling `split_command(value, windows=False)`
     and `windows=True` explicitly: compatibility rows (no `'`, `"`,
     `\`; ASCII space/tab separators) equal `str.split()`; POSIX
@@ -562,11 +562,14 @@ marked "amendment".
     apostrophe case as the Python literal `"it's"` → `["it's"]`
     (Windows only; POSIX raises). Tests fail (no function yet).
     [verify: auto-test]
-  - [ ] 9.2 Add error-case tests to the same file: unbalanced `"`
+    → 15 test functions written; red as expected (ImportError:
+      split_command not defined) [live] (2026-10-09)
+  - [X] 9.2 Add error-case tests to the same file: unbalanced `"`
     (both rule sets) and unbalanced `'` (POSIX) raise `ValueError`
     whose message does not contain the input value; empty string
     and whitespace-only raise `ValueError`. [verify: auto-test]
-  - [ ] 9.3 Implement module-level `split_command(command, *,
+    → red as expected (split_command missing) [live] (2026-10-09)
+  - [X] 9.3 Implement module-level `split_command(command, *,
     windows=None)` in `src/postgres_mcp/sql/connection_script.py`
     per tech-design §`split_command()`: `windows=None` →
     `os.name == "nt"`; POSIX = `shlex.split(command)` with its
@@ -574,13 +577,17 @@ marked "amendment".
     no-escape tokenizer (space/tab separate, `"` toggles and is
     dropped, `""` gives an empty argument, `\` and `'` literal).
     9.1 and 9.2 pass. [verify: auto-test]
-  - [ ] 9.4 In `_spawn()` (`connection_script.py:198-210`) replace
+    → test_split_command.py: 31 passed [live] (2026-10-09)
+  - [X] 9.4 In `_spawn()` (`connection_script.py:198-210`) replace
     `*self._script.split()` with `*split_command(self._script)`;
     map `ValueError` to `_SpawnError`. Add a unit test in
     `test_connection_script.py` that a quoted path with a space
     reaches `create_subprocess_exec` as one argument. Full unit
     suite green. [verify: auto-test]
-  - [ ] 9.5 Write tests for startup validation in whichever unit
+    → quoted path reaches spawn as one argument; unbalanced quotes
+      fail without spawning; full unit suite 284 passed, 1 xfailed
+      [live] (2026-10-09)
+  - [X] 9.5 Write tests for startup validation in whichever unit
     test file already drives `main()` / `_build_parser()` (check
     `tests/unit/test_transport.py`, `tests/unit/test_config.py`):
     unbalanced quotes via `--pre-connect-script` and via
@@ -588,24 +595,30 @@ marked "amendment".
     `--pre-connect-script / PGMCP_PRE_CONNECT_SCRIPT` and does not
     contain the value; whitespace-only value → exit 2.
     [verify: auto-test]
-  - [ ] 9.6 Implement validation in `server.main()` between
+    → 3 tests in test_config.py; red as expected (main reached the
+      transport) [live] (2026-10-09)
+  - [X] 9.6 Implement validation in `server.main()` between
     `parse_config(args)` and `DbConnPool(...)`
     (`server.py:711-717`): if `pre_connect_script` is set, call
     `split_command()`; on `ValueError` call
     `parser.error("invalid --pre-connect-script /
     PGMCP_PRE_CONNECT_SCRIPT: <reason>")`. 9.5 passes.
     [verify: auto-test]
-  - [ ] 9.7 Update the `--pre-connect-script` help text
+    → 9.5 passes; real CLI with unbalanced quotes exits 2 naming
+      the option, value not echoed [live] (2026-10-09)
+  - [X] 9.7 Update the `--pre-connect-script` help text
     (`server.py:700`) and the README "Pre-connect scripts" section
     with the quoting rules per OS (POSIX shell-style quotes and
     backslash escapes; Windows double quotes only, backslash always
     literal, no literal `"` possible) and one quoted-path example
-    per OS. README also states the teardown behaviour (POSIX
-    SIGTERM + 5 s grace; Windows whole tree, no graceful step, also
-    on MCP crash) and the accepted risk that a second Ctrl+C during
-    teardown can leave a POSIX script running. Add a unit test
+    per OS. The README teardown text is written by the subtasks that
+    implement it (10.3 POSIX, 11.4 Windows, 12.2 exit path), so the
+    README never describes behaviour the code lacks. Add a unit test
     asserting `_build_parser().format_help()` contains the quoting
     rule text. [verify: auto-test]
+    → help-text test passes; `--help` and README show the rules per
+      OS; teardown README text moved to 10.3/11.4/12.2 [live]
+      (2026-10-09)
 
 - [ ] 10.0 **User Story:** As a script author on POSIX, I want
   teardown to send `SIGTERM`, wait a 5 s grace period, then kill, so
@@ -631,7 +644,9 @@ marked "amendment".
     `returncode is None`; `terminate()` → `wait_for(proc.wait(),
     grace)` → on timeout `kill()` + `wait()`; send the signal
     before reaping the reader, reap after exit; emit the two new
-    events. 10.2 passes; full unit suite green. [verify: auto-test]
+    events. README "Pre-connect scripts": on POSIX the script gets
+    `SIGTERM`, then `SIGKILL` after 5 s. 10.2 passes; full unit
+    suite green. [verify: auto-test]
   - [ ] 10.4 Change `_spawn()` to inherit stderr (drop
     `stderr=asyncio.subprocess.PIPE`, `connection_script.py:206`).
     Confirm nothing reads `proc.stderr` (grep). Full unit suite
@@ -699,8 +714,10 @@ marked "amendment".
     run-and-exit path (`connection_script.py:246-262`) and the
     long-running exit path; Windows teardown per tech-design
     §Teardown (no graceful step, wait bounded by
-    `_TERMINATE_GRACE_S`). 11.3 passes; full unit suite green on
-    macOS. [verify: auto-test]
+    `_TERMINATE_GRACE_S`). README: on Windows the whole process
+    tree ends at once, with no graceful step, also if the MCP
+    crashes. 11.3 passes; full unit suite green on macOS.
+    [verify: auto-test]
   - [ ] 11.5 Create `tests/unit/sql/test_win_job.py`
     (`pytest.mark.skipif(os.name != "nt")`): `WindowsJob.for_pid`
     on a `python -c` child that starts a `python -c` grandchild
@@ -748,7 +765,9 @@ marked "amendment".
     signals; wrap the transport `await` (all three transports,
     `server.py:758-768`) in `try / except CancelledError /
     finally: await db_connection.close()`; exit with `128 + sig`
-    after the `finally` when a signal was received. 12.1 passes;
+    after the `finally` when a signal was received. README: the
+    script is stopped when the client disconnects; a second Ctrl+C
+    during that stop can leave a POSIX script running. 12.1 passes;
     full unit suite green. [verify: auto-test]
   - [ ] 12.3 Add E2E test in `tests/e2e/test_server_lifecycle.py`:
     start the MCP with the `subprocess.Popen([sys.executable, "-m",

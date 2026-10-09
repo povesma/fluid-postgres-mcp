@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import shlex
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
@@ -21,6 +23,52 @@ from urllib.parse import urlparse
 from postgres_mcp.sql.utils import obfuscate_password
 
 logger = logging.getLogger(__name__)
+
+
+def split_command(command: str, *, windows: Optional[bool] = None) -> list[str]:
+    """Split a --pre-connect-script value into argv.
+
+    POSIX: shell-style quotes and backslash escapes (`shlex`). Windows:
+    double quotes group, backslash and `'` are literal, so `C:\\...`
+    paths survive. Error messages never include the value, which may
+    carry credentials.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        argv = _split_windows(command)
+    else:
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            raise ValueError("unbalanced quotes") from None
+    if not argv:
+        raise ValueError("empty command")
+    return argv
+
+
+def _split_windows(command: str) -> list[str]:
+    argv: list[str] = []
+    current: list[str] = []
+    in_arg = False
+    in_quote = False
+    for ch in command:
+        if ch == '"':
+            in_quote = not in_quote
+            in_arg = True
+        elif ch in " \t" and not in_quote:
+            if in_arg:
+                argv.append("".join(current))
+                current = []
+                in_arg = False
+        else:
+            current.append(ch)
+            in_arg = True
+    if in_quote:
+        raise ValueError("unbalanced double quote")
+    if in_arg:
+        argv.append("".join(current))
+    return argv
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +248,13 @@ class ConnectionScriptManager:
         self._ready_event.clear()
         self._exit_event.clear()
         try:
+            argv = split_command(self._script)
+        except ValueError as exc:
+            self._proc = None
+            raise _SpawnError(f"invalid pre-connect-script command: {exc}") from exc
+        try:
             self._proc = await asyncio.create_subprocess_exec(
-                *self._script.split(),
+                *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

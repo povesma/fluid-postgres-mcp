@@ -213,6 +213,21 @@ Every flag has a matching env var (`PGMCP_*`). CLI wins.
 Two modes, auto-detected from script behaviour. Existing run-and-exit
 scripts work unchanged.
 
+**Quoting.** The option (or `PGMCP_PRE_CONNECT_SCRIPT`) is one
+command string, split into arguments without a shell. Quote any path
+that contains a space:
+
+- **macOS / Linux**: shell-style quotes and backslash escapes, e.g.
+  `--pre-connect-script '"/opt/my tunnels/tunnel.sh" mydb'`.
+- **Windows**: double quotes group an argument; a backslash is always
+  literal, so `C:\…` paths need no escaping and `"C:\dir\"` stays
+  `C:\dir\`. Single quotes are ordinary characters. Example:
+  `uv run --no-project --python 3.12 "C:\Users\Jane Doe\tunnel.py" mydb`.
+
+A value with unbalanced quotes (or only whitespace) makes the server
+exit with status 2 at startup; the error names the option but never
+echoes the value.
+
 **Run-and-exit:** the script runs, exits 0, and the MCP connects.
 Suitable when something else owns the tunnel.
 

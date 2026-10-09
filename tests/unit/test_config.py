@@ -235,3 +235,47 @@ class TestVersionFlag:
 
         assert ei.value.code == 0
         assert capsys.readouterr().out.strip() == "fluid-postgres-mcp unknown (source checkout)"
+
+
+def test_help_states_pre_connect_script_quoting_rules():
+    from postgres_mcp import server
+
+    help_text = " ".join(server._build_parser().format_help().split())
+    assert "POSIX" in help_text
+    assert "Windows" in help_text
+    assert "backslash" in help_text
+
+
+class TestPreConnectScriptValidation:
+    SECRET = "s3cr3t-pw"
+
+    async def _run_main_expect_usage_error(self, capsys):
+        from postgres_mcp import server
+
+        with pytest.raises(SystemExit) as ei:
+            await server.main()
+        assert ei.value.code == 2
+        err = capsys.readouterr().err
+        assert "--pre-connect-script / PGMCP_PRE_CONNECT_SCRIPT" in err
+        assert self.SECRET not in err
+        return err
+
+    @pytest.mark.asyncio
+    async def test_unbalanced_quotes_via_flag_exit_2(self, monkeypatch, capsys):
+        value = f'"/opt/my tunnels/t.sh --password {self.SECRET}'
+        monkeypatch.setattr("sys.argv", ["fluid-postgres-mcp", "--pre-connect-script", value])
+        monkeypatch.delenv("PGMCP_PRE_CONNECT_SCRIPT", raising=False)
+        await self._run_main_expect_usage_error(capsys)
+
+    @pytest.mark.asyncio
+    async def test_unbalanced_quotes_via_env_exit_2(self, monkeypatch, capsys):
+        value = f'"/opt/my tunnels/t.sh --password {self.SECRET}'
+        monkeypatch.setattr("sys.argv", ["fluid-postgres-mcp"])
+        monkeypatch.setenv("PGMCP_PRE_CONNECT_SCRIPT", value)
+        await self._run_main_expect_usage_error(capsys)
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_value_exit_2(self, monkeypatch, capsys):
+        monkeypatch.setattr("sys.argv", ["fluid-postgres-mcp", "--pre-connect-script", "   "])
+        monkeypatch.delenv("PGMCP_PRE_CONNECT_SCRIPT", raising=False)
+        await self._run_main_expect_usage_error(capsys)

@@ -262,6 +262,27 @@ class TestRunAndExitMode:
         argv, _fp = spawns[0]
         assert argv == ("my-tunnel-script",)
 
+    @pytest.mark.asyncio
+    async def test_quoted_path_with_space_is_one_argument(self):
+        spawns, factory, fake_exec = install_fake_proc_factory("")
+        factory.next = lambda fp: fp.set_exit_code(0)
+
+        mgr, _events = _make_manager(script='"/opt/my tunnels/t.sh" db')
+        with patch("asyncio.create_subprocess_exec", fake_exec):
+            await mgr.ensure_ready()
+        argv, _fp = spawns[0]
+        assert argv == ("/opt/my tunnels/t.sh", "db")
+
+    @pytest.mark.asyncio
+    async def test_unbalanced_quotes_fail_without_spawning(self):
+        spawns, _factory, fake_exec = install_fake_proc_factory("")
+
+        mgr, _events = _make_manager(script='"/opt/my tunnels/t.sh db')
+        with patch("asyncio.create_subprocess_exec", fake_exec):
+            outcome = await mgr.ensure_ready()
+        assert outcome.success is False
+        assert spawns == []
+
 
 # ---------------------------------------------------------------------------
 # LONG_RUNNING mode
