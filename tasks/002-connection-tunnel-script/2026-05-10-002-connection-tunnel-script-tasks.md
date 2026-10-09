@@ -838,7 +838,7 @@ marked "amendment".
 
 - [ ] 12.0 **User Story:** As an analyst who closes the agent, I want
   `server.main()` to be the single teardown owner on every exit path
-  so that no tunnel process outlives the MCP [6/0]
+  so that no tunnel process outlives the MCP [8/0]
   - [X] 12.1 Write unit tests in `tests/unit/test_transport.py`
     with a stubbed transport and a stub `db_connection` that counts
     `close()` calls. The signal handler is a closure inside
@@ -917,30 +917,65 @@ marked "amendment".
     → 3 unit tests (open fails, first query fails, cancelled); real
       MCP with SIGTERM during the initial connect exits 143 in 3.4 s,
       script gone [live] (2026-10-09)
+  - [X] 12.7 Test hygiene (found in 12.1): six tests in
+    `tests/unit/test_transport.py` (`test_transport_argument_parsing`
+    ×3, `test_*_host_port_arguments` ×2,
+    `test_default_transport_is_stdio`) take 30 s each — they patch
+    `server.db_connection.pool_connect`, but `main()` replaces
+    `db_connection`, so each makes a real connect to `localhost` and
+    waits for psycopg's timeout. Patch `server.DbConnPool` instead
+    (as `_ExitHarness` does). Target: file under 5 s.
+    [verify: auto-test]
+    → `stub_pool` fixture patches `server.DbConnPool`; file 180 s → 0.06 s,
+      14 passed; unit suite 311 passed, 4 skipped, 1 xfailed [live]
+      (2026-10-09)
+  - [X] 12.8 Test hygiene (found in 10.6): `tests/unit/sql` and
+    `tests/integration` share module basenames
+    (`test_file_output.py`, `test_reconnect.py`, `test_timeout.py`),
+    so `pytest tests/unit tests/integration` fails at collection.
+    Rename the integration ones (e.g. `test_*_integration.py`) or add
+    `__init__.py` packages; one combined run collects.
+    [verify: auto-test]
+    → integration files renamed to `test_*_integration.py` (repo
+      convention); `pytest tests/unit tests/integration` collects 368
+      tests, exit 0 [live] (2026-10-09)
 
-- [ ] 13.0 **User Story:** As the maintainer, I want every
+- [X] 13.0 **User Story:** As the maintainer, I want every
   Windows-only acceptance criterion checked on the Windows test
   machine over SSH, with evidence recorded here, so that the Windows
   promise is proven before release [8/0]
-  - [ ] 13.1 Confirm the Windows setup from 11.6 is still present
+  - [X] 13.1 Confirm the Windows setup from 11.6 is still present
     (`uv --version`, `uv run --python 3.12 python --version`).
     Record output. [verify: manual-run-claude]
-  - [ ] 13.2 Refresh the Windows test directory from 11.6 with the
+    → uv 0.12.24, Python 3.12.15 [live] (2026-10-09)
+  - [X] 13.2 Refresh the Windows test directory from 11.6 with the
     current versions of all files changed in 9.0–12.0 (tracked
     files only — never `.git`, `.claude/`, `tmp/`, `.env`), then
     `uv pip install -e ".[dev]"`. Record the file list and install
     output. [verify: manual-run-claude]
-  - [ ] 13.3 Run on Windows: `pytest tests/unit/sql/` (including
+    → `git archive HEAD` (af822aa: tracked files only) unpacked
+      over the folder; editable reinstall of 0.1.4 ok [live]
+      (2026-10-09)
+  - [X] 13.3 Run on Windows: `pytest tests/unit/sql/` (including
     `test_win_job.py`, now not skipped) and
     `test_split_command.py`. Record the pass counts.
     [verify: manual-run-claude]
-  - [ ] 13.4 Quoted path with a space: run the MCP with
+    → first full run: 1 failure (grandchild "alive" after job
+      terminate) — the test checked liveness by PID via `tasklist`,
+      which PID reuse fools; passed 5/5 alone. Tests now hold a
+      process handle opened while the process is alive and wait on
+      it; 3 full runs: 170 passed each [live] (2026-10-09)
+  - [X] 13.4 Quoted path with a space: run the MCP with
     `--pre-connect-script 'uv run --no-project --python 3.12
     "<dir with space>\fixture.py"'` where the fixture emits
     `[MCP] READY_TO_CONNECT`; confirm via debug log / `status`
     output that the script started and READY was received.
     [verify: manual-run-claude]
-  - [ ] 13.5 Tree teardown: a launcher-started fixture
+    → driver `winchecks.py` (scratch, folder under `C:\Users\<user>\fpm
+      test`): real MCP started `uv run --no-project --python 3.12
+      "<folder with space>\tunnel.py" …`; READY received (MCP logged
+      WAITING_FOR_URL) — twice [live] (2026-10-09)
+  - [X] 13.5 Tree teardown: a launcher-started fixture
     (`uv run … fixture.py`) whose child starts a long-lived process
     that binds a local port. Trigger teardown; confirm the port is
     free (`Get-NetTCPConnection -LocalPort <p>` empty) and a second
@@ -949,34 +984,55 @@ marked "amendment".
     `Stop-Process -Id <uv pid>` (no tree kill); record whether the
     child survived — answers the PRD assumption.
     [verify: manual-run-claude]
-  - [ ] 13.6 Exit path: start the MCP over stdio from a PowerShell
+    → after teardown: script and uv's grandchild gone, port free;
+      second start bound the same port fine. PRD assumption answered:
+      `TerminateProcess` on `uv.exe` alone leaves the script and its
+      grandchild running (both alive 2 s later) [live] (2026-10-09)
+  - [X] 13.6 Exit path: start the MCP over stdio from a PowerShell
     wrapper, close its stdin; confirm no process from the script
     tree remains (`Get-CimInstance Win32_Process` filtered by the
     recorded PIDs). [verify: manual-run-claude]
-  - [ ] 13.7 Run-and-exit: a fixture that starts a detached
+    → stdin closed → MCP exit code 0; no process from the script tree
+      left (checked by process handle) [live] (2026-10-09)
+  - [X] 13.7 Run-and-exit: a fixture that starts a detached
     background process and exits 0; confirm that background process
     is still running after the MCP connected, then clean it up.
     [verify: manual-run-claude]
-  - [ ] 13.8 Remove only the exact test directory recorded in 11.6,
+    → detached background process alive while the MCP ran and after
+      it exited (job released); then removed. Driver total: 17 ok,
+      0 failed [live] (2026-10-09)
+  - [X] 13.8 Remove only the exact test directory recorded in 11.6,
     after checking the path ends in `fpm test` and is under the
     user profile (keep `uv` and Python for future runs). Record the
     evidence of 11.6 and 13.1–13.7 under each subtask here, with
     the host alias, user name and any IP addresses replaced by
     `<windows-test-host>` / `<user>`. [verify: manual-run-claude]
+    → no leftover test processes; folder deleted after checking its
+      name and parent (`removed: True`); uv and Python kept; evidence
+      above uses placeholders only [live] (2026-10-09)
 
 - [ ] 14.0 **User Story:** As the downstream installer maintainer, I
   want a released version with documented quoting rules and a reply
   naming it so that I can pin it in the Windows installer [5/0]
   - [ ] 14.1 Add a `## [0.1.5] - <date>` section to `CHANGELOG.md`
-    per the README CHANGELOG authoring rule: Added (quoted paths in
-    `--pre-connect-script`, Windows tree teardown), Changed (POSIX
-    values containing `'`, `"`, `\` and non-ASCII whitespace now
-    split differently; graceful `SIGTERM` teardown; script stderr
-    inherited; teardown on client close; whitespace-only value
-    exits 2). Bump `pyproject.toml` to `0.1.5`. Then commit on
-    `main`: first the amendment code, tests and docs, then the
-    version bump + CHANGELOG (no AI attribution lines, per the
-    user's CLAUDE.md). `scripts/release.sh:128-140` refuses a dirty
+    per the README CHANGELOG authoring rule:
+    Added — quoted paths in `--pre-connect-script` (POSIX and
+    Windows rules); Windows: the script's whole process tree ends on
+    stop, also if the MCP crashes.
+    Fixed — on Windows the pre-connect script never started (the
+    selector event loop cannot run subprocesses); the script is now
+    stopped on every MCP exit (client disconnect, SIGTERM/SIGINT also
+    during startup, transport error), not only on a signal; on Python
+    3.12+ a script whose child kept stdout open was never seen to exit
+    and could hang shutdown; a failed connect no longer leaves a pool
+    reconnecting in the background.
+    Changed — POSIX values containing `'`, `"`, `\` and non-ASCII
+    whitespace now split differently; scripts get `SIGTERM` and 5 s
+    before `SIGKILL`; script stderr goes to the MCP's stderr;
+    malformed or whitespace-only values exit 2 at startup.
+    Bump `pyproject.toml` to `0.1.5` and commit bump + CHANGELOG on
+    `main` (the code is already committed; no AI attribution lines,
+    per the user's CLAUDE.md). `scripts/release.sh` refuses a dirty
     tree and requires the bump and the `[0.1.5]` section to be
     committed. Confirm `git status` is clean. Do not push yet — the
     release script pushes. [verify: code-only]
@@ -1000,6 +1056,10 @@ marked "amendment".
     `2026-MM-DD-fluid-postgres-mcp-reply.md` with the release
     version, the final quoting rules per OS (including the
     recommended registration form), Windows teardown behaviour (no
-    graceful step; whole tree ends; also on MCP crash), and POSIX
-    teardown behaviour (SIGTERM + 5 s). The user commits it in that
-    repo. [verify: code-only]
+    graceful step; whole tree ends; also on MCP crash), POSIX
+    teardown behaviour (SIGTERM + 5 s), and that before 0.1.5
+    `--pre-connect-script` never started on Windows at all (selector
+    event loop), so any earlier Windows result was not this feature.
+    Also confirm their concern from the hand-off: `uv.exe` killed
+    alone leaves its children running (verified in 13.5). The user
+    commits it in that repo. [verify: code-only]

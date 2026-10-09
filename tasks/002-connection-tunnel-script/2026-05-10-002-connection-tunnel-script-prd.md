@@ -100,9 +100,15 @@ Observed state in 0.1.3:
   verified via: Python `subprocess.Popen.kill()` documentation
   ("On Windows, kill() is an alias for terminate()"), 2026-10-08
 - When the command starts with a launcher (for example `uv run …`),
-  the launcher's child processes may survive `TerminateProcess` and
-  keep the local tunnel port bound — [assumption, verify in
-  tech-design]
+  the launcher's child processes survive `TerminateProcess` on the
+  launcher and keep the local tunnel port bound — verified via: task
+  13.5 on the Windows test machine (`TerminateProcess` on `uv.exe`
+  left the script and its grandchild running), 2026-10-09
+- On Windows the selector event loop that `postgres_mcp.main()`
+  installs cannot run asyncio subprocesses, so the script never
+  started on Windows before 0.1.5 — verified via: Python docs (asyncio
+  platform support) and a `NotImplementedError` reproduced on the
+  Windows test machine, 2026-10-09
 - Teardown is not reached on the most common exit path. The only
   route to it at shutdown is `shutdown()` → `db_connection.close()`,
   and `shutdown()` is wired only through `SIGTERM`/`SIGINT`

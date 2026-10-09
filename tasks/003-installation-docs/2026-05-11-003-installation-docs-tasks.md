@@ -129,7 +129,7 @@
     → red as expected: requirement read as `mcp[cli]>=1.25.0`; run
       with `--noconftest` because conftest import fails on mcp 2.x
       [live] (2026-10-09)
-  - [ ] 6.2 Change `pyproject.toml:8` to `"mcp[cli]>=1.25.0,<2"`;
+  - [X] 6.2 Change `pyproject.toml:8` to `"mcp[cli]>=1.25.0,<2"`;
     reinstall `.venv` (`uv pip install -e ".[dev]"`) so it resolves
     `mcp` 1.x; 6.1 passes and the full unit suite is green.
     [verify: auto-test]
