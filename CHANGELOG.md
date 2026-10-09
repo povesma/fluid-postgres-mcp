@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-09
+
+### Fixed
+- Fresh installs no longer fail at startup with
+  `No module named 'mcp.server.fastmcp'`; the `mcp` dependency is
+  now pinned below 2.0. Upgrade if 0.1.3 fails to start.
+
 ## [0.1.3] - 2026-05-14
 
 ### Added
