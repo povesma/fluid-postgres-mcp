@@ -160,7 +160,7 @@
     `fluid-postgres-mcp 0.1.4`. [verify: manual-run-claude]
     → prints `fluid-postgres-mcp 0.1.4` [live] (2026-10-09)
 
-- [ ] 7.0 **User Story:** As the maintainer, I want the release
+- [X] 7.0 **User Story:** As the maintainer, I want the release
   tooling to report and roll back a partial release correctly so
   that a failure after the push never leaves a stray tag (found
   during the 0.1.4 release) [4/0]
@@ -182,7 +182,7 @@
       Release now fails the check; real 0.1.4 → OK; clone with the
       tag only on origin → origin found, FAIL on the other sources
       [live] (2026-10-09)
-  - [~] 7.3 `scripts/release.sh` preflight: before tagging, check
+  - [X] 7.3 `scripts/release.sh` preflight: before tagging, check
     that `.venv/bin/twine` exists, `.env` exists, and the gh token
     has push access (`gh api repos/<owner>/<repo> --jq
     .permissions.push`), so these fail before anything is pushed.
@@ -190,6 +190,9 @@
     → negative case live: gh token without push access stopped the
       script at step 0, before tag/push (2026-10-09); positive case
       pending a gh account with push access
+    → 0.1.5 release: wrong account stopped at step 0 again (nothing
+      published); account with push access passed the preflight and
+      the release completed [live] (2026-10-10)
   - [X] 7.4 `scripts/release.sh` and `scripts/release-check.sh`
     follow the user's "no silent waits" rule: every step logs one
     line with elapsed time (no step output sent to `/dev/null`

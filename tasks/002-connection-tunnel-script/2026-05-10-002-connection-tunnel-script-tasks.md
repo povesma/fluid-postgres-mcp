@@ -978,7 +978,7 @@ marked "amendment".
     files only — never `.git`, `.claude/`, `tmp/`, `.env`), then
     `uv pip install -e ".[dev]"`. Record the file list and install
     output. [verify: manual-run-claude]
-    → `git archive HEAD` (af822aa: tracked files only) unpacked
+    → `git archive HEAD` (cfb663f: tracked files only) unpacked
       over the folder; editable reinstall of 0.1.4 ok [live]
       (2026-10-09)
   - [X] 13.3 Run on Windows: `pytest tests/unit/sql/` (including
@@ -1039,7 +1039,7 @@ marked "amendment".
 - [ ] 14.0 **User Story:** As the downstream installer maintainer, I
   want a released version with documented quoting rules and a reply
   naming it so that I can pin it in the Windows installer [5/0]
-  - [ ] 14.1 Add a `## [0.1.5] - <date>` section to `CHANGELOG.md`
+  - [X] 14.1 Add a `## [0.1.5] - <date>` section to `CHANGELOG.md`
     per the README CHANGELOG authoring rule:
     Added — quoted paths in `--pre-connect-script` (POSIX and
     Windows rules); Windows: the script's whole process tree ends on
@@ -1061,11 +1061,12 @@ marked "amendment".
     tree and requires the bump and the `[0.1.5]` section to be
     committed. Confirm `git status` is clean. Do not push yet — the
     release script pushes. [verify: code-only]
-  - [ ] 14.2 Write the hand-written GitHub Release body per the
+  - [X] 14.2 Write the hand-written GitHub Release body per the
     README rule to a scratch file. Show it to the user and get
     explicit approval to release 0.1.5 — the script uploads to
     PyPI, which cannot be undone. [verify: manual-run-user]
-  - [ ] 14.3 Precondition: the user's explicit approval from 14.2
+    → user approved the body and the release [live] (2026-10-10)
+  - [X] 14.3 Precondition: the user's explicit approval from 14.2
     is recorded in this session; otherwise stop. Run
     `scripts/release.sh --version 0.1.5 --release-body-file <file>
     --yes` — it pushes the commits and tag to origin and uploads to
@@ -1073,6 +1074,10 @@ marked "amendment".
     `scripts/release-check.sh 0.1.5` shows tag, GitHub Release and
     PyPI agree, and `uvx fluid-postgres-mcp@0.1.5 --version` prints
     `0.1.5`. [verify: manual-run-claude]
+    → first run stopped at the gh-push preflight (wrong gh account),
+      nothing published; after the account switch: release-check
+      "v0.1.5 is fully released" (origin tag, GH Release, PyPI agree),
+      uvx smoke prints `fluid-postgres-mcp 0.1.5` [live] (2026-10-10)
   - [ ] 14.4 On the Windows machine: `uvx fluid-postgres-mcp@0.1.5
     --version` and repeat 13.4 against the published package.
     [verify: manual-run-claude]
