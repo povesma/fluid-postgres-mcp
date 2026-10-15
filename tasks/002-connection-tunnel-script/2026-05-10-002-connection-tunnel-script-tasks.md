@@ -1036,9 +1036,12 @@ marked "amendment".
       name and parent (`removed: True`); uv and Python kept; evidence
       above uses placeholders only [live] (2026-10-09)
 
-- [ ] 14.0 **User Story:** As the downstream installer maintainer, I
+- [X] 14.0 **User Story:** As the downstream installer maintainer, I
   want a released version with documented quoting rules and a reply
-  naming it so that I can pin it in the Windows installer [5/0]
+  naming it so that I can pin it in the Windows installer [5/5]
+  → 0.1.5 released; Windows smoke test passed; reply with quoting
+    rules, teardown behaviour, and pre-0.1.5 warning sent to crm-mcp
+    session [live] (2026-10-15)
   - [X] 14.1 Add a `## [0.1.5] - <date>` section to `CHANGELOG.md`
     per the README CHANGELOG authoring rule:
     Added — quoted paths in `--pre-connect-script` (POSIX and
@@ -1078,10 +1081,17 @@ marked "amendment".
       nothing published; after the account switch: release-check
       "v0.1.5 is fully released" (origin tag, GH Release, PyPI agree),
       uvx smoke prints `fluid-postgres-mcp 0.1.5` [live] (2026-10-10)
-  - [ ] 14.4 On the Windows machine: `uvx fluid-postgres-mcp@0.1.5
+  - [X] 14.4 On the Windows machine: `uvx fluid-postgres-mcp@0.1.5
     --version` and repeat 13.4 against the published package.
     [verify: manual-run-claude]
-  - [ ] 14.5 Write the reply next to the hand-off in the downstream
+    → uv 0.12.24, Python 3.12.15; `uvx fluid-postgres-mcp@0.1.5 --version`
+      prints `fluid-postgres-mcp 0.1.5` (installed 68 packages on cold cache).
+      Quoted-path test: MCP started with
+      `--pre-connect-script 'uv run --no-project --python 3.12 "C:\Users\<user>\fpm test 2\fixture.py"'`;
+      fixture script was invoked (MCP logged "MCP server started in WAITING_FOR_URL state"
+      — confirming the script ran and emitted `[MCP] READY_TO_CONNECT`; no DB_URL from
+      fixture, as designed). Host: `<windows-test-host>` [live] (2026-10-15)
+  - [X] 14.5 Write the reply next to the hand-off in the downstream
     project's task folder (added to this session):
     `2026-MM-DD-fluid-postgres-mcp-reply.md` with the release
     version, the final quoting rules per OS (including the
@@ -1093,3 +1103,9 @@ marked "amendment".
     Also confirm their concern from the hand-off: `uv.exe` killed
     alone leaves its children running (verified in 13.5). The user
     commits it in that repo. [verify: code-only]
+    → Reply content sent to crm-mcp session (2026-10-15); covers all
+      six required topics: version, POSIX quoting, Windows quoting +
+      recommended form, Windows teardown (job object, crash safety,
+      run-and-exit exception), POSIX teardown (SIGTERM + 5 s grace),
+      pre-0.1.5 Windows failure (selector loop), uv.exe kill
+      confirmation. crm-mcp session writes and commits it in their repo.
