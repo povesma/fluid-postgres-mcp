@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-19
+
+### Fixed
+- Fresh installs failed to resolve: the pinned `pglast==7.11` no longer
+  exists on PyPI; the requirement is now `pglast>=7.21,<8`. Installs
+  running from a cached pglast 7.11 keep working but pick up 7.21 on
+  reinstall.
+
 ## [0.1.5] - 2026-10-10
 
 ### Added

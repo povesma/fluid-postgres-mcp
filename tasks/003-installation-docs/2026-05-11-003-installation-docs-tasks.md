@@ -203,3 +203,44 @@
       elapsed seconds; unreachable origin → `git ls-remote` stopped
       at 30s, check finished in 32s; real 0.1.4 check OK; README
       release section updated [live] (2026-10-09)
+
+- [ ] 8.0 **User Story:** As an operator installing with
+  `uvx fluid-postgres-mcp`, I want a fresh install to resolve again
+  after `pglast` 7.11 disappeared from PyPI (hotfix 0.1.6, reported
+  by the downstream crm-mcp project 2026-10-19: PyPI's 7.x line now
+  holds only 7.20 and 7.21, so the exact pin `pglast==7.11` in
+  0.1.5 makes every fresh install unresolvable; cached installs
+  unaffected) [6/0]
+  - [X] 8.1 Add a test to `tests/unit/test_dependencies.py` that the
+    `pglast` requirement is a range (no `==`, has `>=` and `<8`),
+    so an exact pin can never again break installs when a version is
+    removed from PyPI. Test fails. [verify: auto-test]
+    → red as expected against `pglast==7.11` [live] (2026-10-19)
+  - [X] 8.2 Change `pyproject.toml` to `"pglast>=7.21,<8"` (7.21 =
+    newest 7.x on PyPI; `<8` fences off the untested 8.x line),
+    reinstall, and run the suites against pglast 7.21.
+    [verify: auto-test]
+    → repro first: `uvx --no-cache --python 3.11 --with "mcp[cli]<2"
+      fluid-postgres-mcp@0.1.5 --version` → "no version of
+      pglast==7.11"; with 7.21: unit 312 passed, 4 skipped,
+      1 xfailed (incl. new guard test); integration (Docker PG)
+      43 passed, 9 skipped [live] (2026-10-19)
+  - [ ] 8.3 Add `## [0.1.6] - 2026-10-19` to `CHANGELOG.md` (Fixed:
+    fresh installs failed to resolve; pglast now `>=7.21,<8`), bump
+    `pyproject.toml` to `0.1.6`, commit on `main` (no AI attribution
+    lines): first the range + test, then the bump + CHANGELOG.
+    [verify: code-only]
+  - [ ] 8.4 Write the hand-written GitHub Release body per the README
+    rule to a scratch file; show it and get the user's explicit
+    approval to release 0.1.6 (PyPI upload cannot be undone).
+    [verify: manual-run-user]
+  - [ ] 8.5 Precondition: approval from 8.4 recorded in this session;
+    otherwise stop. Run `scripts/release.sh --version 0.1.6
+    --release-body-file <file> --yes`, then
+    `scripts/release-check.sh 0.1.6`. [verify: manual-run-claude]
+  - [ ] 8.6 Acceptance for the downstream reporter:
+    `uvx --no-cache --python 3.11 --with "mcp[cli]<2"
+    fluid-postgres-mcp@0.1.6 --version` prints `0.1.6` on macOS and
+    on the Windows test machine; reply to the crm-mcp session by
+    message with the version, the chosen pglast requirement, and the
+    yank recommendation for 0.1.5. [verify: manual-run-claude]
